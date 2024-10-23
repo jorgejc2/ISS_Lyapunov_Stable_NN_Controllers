@@ -1,3 +1,21 @@
+"""
+This is an example file that shows how to experiment and create stabilizing controllers for the inverted pendulum
+dynamical system. This program is broken into 3 parts:
+
+1) Initializing the pendulum at equilibrium with a controller that outputs arbitrarily small but constant disturbance.
+   Here, the user should be able to follow the trajectory plot and use their intuition to see that the pendulum is
+   falling away from equilibrium and swinging.
+
+2) Initializing the pendulum slightly away from the equilibrium but using an LQR controller to stabilize it back towards
+   the equilibrium. The LQR solution returns a controller in state feedback form as well as a
+   quadratic Lyapunov function. For state samples near the equilibrium, it should be visually clear that this Lyapunov
+   function fulfills the stability conditions.
+
+3) Initializing the pendulum slightly away from the equilibrium but using a neural network (NN) controller in feedback
+   configuration. The NN is fit onto the previous LQR controller before being implemented. Notice that this controller
+   is stabilizing, but it does not get our system exactly to equilibrium.
+"""
+
 from neural_lyapunov_training.pendulum import PendulumDynamics
 from neural_lyapunov_training.dynamical_system import SecondOrderDiscreteTimeSystem, IntegrationMethod
 import scipy
@@ -17,6 +35,7 @@ set_t = {
 }
 save_path = "inverted_pendulum_plots/"
 
+# integration methods for state evolution
 position_integration, velocity_integration = IntegrationMethod.ExplicitEuler, IntegrationMethod.ExplicitEuler
 
 # spelled out for clearer context
@@ -30,6 +49,7 @@ dynamic_parameters = {
 
 to_numpy = lambda x: x.detach().cpu().numpy()  # converts Tensor to Numpy array
 
+# basic neural network architecture
 class SimpleNNController(nn.Module):
     def __init__(self, in_dim: int, out_dim: int):
 
@@ -183,7 +203,7 @@ def approximate(
 
     return losses
 
-def main(show):
+def main(show, save):
 
     # get dynamic parameters
     m = dynamic_parameters["mass"]
@@ -222,7 +242,7 @@ def main(show):
     # plot results
     plot_states(time_steps, states, r"State Trajectories with $\epsilon$ Control Disturbance",
                 [r"$\theta$", r"$\dot{\theta}$"], pendulum_continuous.x_equilibrium,
-                show, "const_perturbed_control.png")
+                show, "const_perturbed_control.png" if save else None)
 
     ## Shows how the system may be stabilized via LQR
     K, S = compute_lqr(pendulum_continuous)
@@ -230,6 +250,7 @@ def main(show):
     K = torch.from_numpy(K).to(**set_t)  # linear feedback controller
     S = torch.from_numpy(S).to(**set_t)  # quadratic Lyapunov function
     x = (torch.rand((100, 2), **set_t) - 0.5) * 2  # create a bunch of state samples near the origin to stabilize
+    x = torch.cat([x, torch.zeros((1, 2), **set_t)], dim=0)  # make sure to include the equilibrium
     V = torch.sum(x * (x @ S), axis=1, keepdim=True)
     print(f"K shape: {K.shape}, V shape: {V.shape}")
 
@@ -247,7 +268,7 @@ def main(show):
     ax.set_xlabel(r"$\theta$")
     ax.set_ylabel(r"$\dot{\theta}$")
     ax.set_zlabel(r"$V(x)$")
-    plt.savefig(save_path + "lqr_quadratic_lyapunov_function.png")
+    if save: plt.savefig(save_path + "lqr_quadratic_lyapunov_function.png")
     plt.show() if show else plt.close()
 
     # now initialize the states with some disturbance
@@ -265,10 +286,11 @@ def main(show):
     # plot results
     plot_states(time_steps, states, r"State Trajectories with LQR",
                 [r"$\theta$", r"$\dot{\theta}$"], pendulum_continuous.x_equilibrium,
-                show, "lqr_control.png")
+                show, "lqr_control.png" if save else None)
 
     ## Shows how the system may be stabilized using a NN that learns the LQR controller
     x = (torch.rand((100000, 2), **set_t) - 0.5) * 2  # create a bunch of state samples near the origin to stabilize
+    x = torch.cat([x, torch.zeros((1, 2), **set_t)], dim=0)  # make sure to include the equilibrium
     lqr_samples = x @ K.permute(1, 0)  # get the control feedback for these states
     controller = SimpleNNController(n_dim, m_dim).to(device=set_t["device"])  # initialize a simple NN controller
     losses = approximate(controller, x, lqr_samples, lr=0.01, max_iter=1000)  # fit the NN to the LQR controller
@@ -280,7 +302,7 @@ def main(show):
     plt.ylabel("MSE Loss")
     plt.title("NN Controller Training Convergence")
     plt.grid()
-    plt.savefig(save_path + "nn_controller_loss.png")
+    if save: plt.savefig(save_path + "nn_controller_loss.png")
     plt.show() if show else plt.close()
 
     # now initialize the states with some disturbance
@@ -297,8 +319,9 @@ def main(show):
     # plot results
     plot_states(time_steps, states, r"State Trajectories with NN Controller",
                 [r"$\theta$", r"$\dot{\theta}$"], pendulum_continuous.x_equilibrium,
-                show, "nn_control.png")
+                show, "nn_control.png" if save else None)
 
 if __name__ == '__main__':
     show_plots = True
-    main(show_plots)
+    save_plots = False
+    main(show_plots, save_plots)
