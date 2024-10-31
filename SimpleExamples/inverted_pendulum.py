@@ -31,8 +31,9 @@ from math import ceil
 # torch default options
 set_t = {
     "dtype": torch.float32,
-    "device": torch.device("cuda"),  # set to cpu if you don't have a graphics card
+    "device": torch.device("cpu"),  # set to cpu if you don't have a graphics card
 }
+#cuda
 save_path = "inverted_pendulum_plots/"
 
 # integration methods for state evolution
