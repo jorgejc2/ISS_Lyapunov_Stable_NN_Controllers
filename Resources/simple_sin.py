@@ -21,7 +21,7 @@ device = torch.device('cuda')
 class SimpleSin(nn.Module):
     def __init__(self,
                  lrate: float,
-                 loss_fn,
+                 loss_fn=nn.L1Loss(),
                  ):
         """
         Initialize simple Sin model

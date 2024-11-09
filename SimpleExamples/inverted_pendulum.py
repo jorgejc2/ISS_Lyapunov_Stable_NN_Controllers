@@ -26,12 +26,13 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
+# import pybullet as p
 from math import ceil
 
 # torch default options
 set_t = {
     "dtype": torch.float32,
-    "device": torch.device("cuda"),  # set to cpu if you don't have a graphics card
+    "device": torch.device("cpu"),  # set to cpu if you don't have a graphics card
 }
 save_path = "inverted_pendulum_plots/"
 
@@ -227,10 +228,13 @@ def main(show, save):
     time_steps = torch.arange(0, T, dt)  # time steps
     n_time_steps = len(time_steps)
 
-    ## Shows how the system evolves with constant epsilon disturbance in the controller
+    ## 1) Shows how the system evolves with constant epsilon disturbance in the controller
     states = torch.zeros((n_time_steps, n_dim), **set_t)
     u = torch.full((n_time_steps, m_dim), torch.finfo(set_t["dtype"]).eps, **set_t)
     # simulate dynamics
+    # p.connect(p.GUI)  # or p.DIRECT for non-graphical version
+    # p.setGravity(0, 0, -9.81)  # Set gravity, if applicable
+    # robot_id = p.loadURDF("./pybullet_urdf/inverted_pendulum.urdf")
     for i in range(1, n_time_steps):
         time = time_steps[i]
         prev_state = states[i-1].unsqueeze(0)
@@ -239,12 +243,16 @@ def main(show, save):
         states[i] = new_state
         print(f"time {time:.2f} sec | state {to_numpy(new_state)} | input {to_numpy(control)}")
 
+        # Step the PyBullet simulation
+        # apply_state_to_pybullet(new_state)
+        # p.stepSimulation()
+
     # plot results
     plot_states(time_steps, states, r"State Trajectories with $\epsilon$ Control Disturbance",
                 [r"$\theta$", r"$\dot{\theta}$"], pendulum_continuous.x_equilibrium,
                 show, "const_perturbed_control.png" if save else None)
 
-    ## Shows how the system may be stabilized via LQR
+    ## 2) Shows how the system may be stabilized via LQR
     K, S = compute_lqr(pendulum_continuous)
     # convert to Tensors
     K = torch.from_numpy(K).to(**set_t)  # linear feedback controller
@@ -288,7 +296,7 @@ def main(show, save):
                 [r"$\theta$", r"$\dot{\theta}$"], pendulum_continuous.x_equilibrium,
                 show, "lqr_control.png" if save else None)
 
-    ## Shows how the system may be stabilized using a NN that learns the LQR controller
+    ## 3) Shows how the system may be stabilized using a NN that learns the LQR controller
     x = (torch.rand((100000, 2), **set_t) - 0.5) * 2  # create a bunch of state samples near the origin to stabilize
     x = torch.cat([x, torch.zeros((1, 2), **set_t)], dim=0)  # make sure to include the equilibrium
     lqr_samples = x @ K.permute(1, 0)  # get the control feedback for these states

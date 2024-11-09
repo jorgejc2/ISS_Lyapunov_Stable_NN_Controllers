@@ -1,5 +1,8 @@
 import os
 
+os.environ["PYTHONPATH"] = '${PYTHONPATH}:/home/jorgejc2/Documents/ClassRepos/ISS_Lyapunov_Stable_NN_Controllers:/home/jorgejc2/Documents/ClassRepos/ISS_Lyapunov_Stable_NN_Controllers/alpha-beta-CROWN:/home/jorgejc2/Documents/ClassRepos/ISS_Lyapunov_Stable_NN_Controllers/alpha-beta-CROWN/complete_verifier'
+os.environ["CONFIG_PATH"] = '/home/jorgejc2/Documents/ClassRepos/ISS_Lyapunov_Stable_NN_Controllers'
+
 if __name__ == "__main__":
 
     curr_cwd = os.getcwd()
