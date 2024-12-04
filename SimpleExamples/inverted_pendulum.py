@@ -12,8 +12,7 @@ dynamical system. This program is broken into 3 parts:
    function fulfills the stability conditions.
 
 3) Initializing the pendulum slightly away from the equilibrium but using a neural network (NN) controller in feedback
-   configuration. The NN is fit onto the previous LQR controller before being implemented. Notice that this controller
-   is stabilizing, but it does not get our system exactly to equilibrium.
+   configuration. The NN is fit onto the previous LQR controller before being implemented. Notice that this controller is stabilizing, but it does not get our system exactly to equilibrium
 """
 
 from neural_lyapunov_training.pendulum import PendulumDynamics
@@ -33,7 +32,6 @@ set_t = {
     "dtype": torch.float32,
     "device": torch.device("cpu"),  # set to cpu if you don't have a graphics card
 }
-#cuda
 save_path = "inverted_pendulum_plots/"
 
 # integration methods for state evolution
