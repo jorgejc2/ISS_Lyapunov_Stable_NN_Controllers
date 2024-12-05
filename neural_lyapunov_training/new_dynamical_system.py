@@ -32,53 +32,6 @@ class IntegrationMethod(Enum):
     ExplicitEuler = 1
     MidPoint = 2
 
-class FirstOrderDiscreteTimeSystem(DiscreteTimeSystem):
-    """
-    This discrete-time system is constructed by discretizing a continuous time
-    first-order dynamical system in time.
-    """
-
-    def __init__(
-        self,
-        continuous_time_system,
-        dt: float,
-        integration: IntegrationMethod = IntegrationMethod.ExplicitEuler,
-    ):
-        """
-        Args:
-          continuous_time_system: This system has to define a function
-          xdot = f(x, u)
-        """
-        super(FirstOrderDiscreteTimeSystem, self).__init__(
-            continuous_time_system.nx, continuous_time_system.nu
-        )
-        assert callable(getattr(continuous_time_system, "forward"))
-        self.nx = continuous_time_system.nx
-        self.nu = continuous_time_system.nu
-        self.dt = dt
-        self.integration = integration
-        self.continuous_time_system = continuous_time_system
-        self.Ix = torch.eye(self.nx)
-
-    def forward(self, x, u):
-        """
-        Compute x_next for a batch of x and u
-        """ 
-        assert x.shape[0] == u.shape[0]
-        xdot = self.continuous_time_system.forward(x, u)
-        if self.integration == IntegrationMethod.ExplicitEuler:
-            x_next = x + xdot * self.dt
-        else:
-            raise NotImplementedError
-        return x_next
-
-    @property
-    def x_equilibrium(self):
-        return self.continuous_time_system.x_equilibrium
-
-    @property
-    def u_equilibrium(self):
-        return self.continuous_time_system.u_equilibrium
 
 
 class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
@@ -171,29 +124,3 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
     @property
     def u_equilibrium(self):
         return self.continuous_time_system.u_equilibrium
-
-
-class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
-        def forward(self, x, u):
-        """
-        Compute x_next for a batch of x and u
-        """
-        assert x.shape[0] == u.shape[0]
-        qddot = self.continuous_time_system.forward(x, u)
-        if self.velocity_integration == IntegrationMethod.ExplicitEuler:
-            qdot_next = x[:, self.nq :] + qddot * self.dt
-        else:
-            raise NotImplementedError
-        if self.position_integration == IntegrationMethod.MidPoint:
-            q_next = x[:, : self.nq] + (qdot_next + x[:, self.nq :]) / 2 * self.dt
-        elif self.position_integration == IntegrationMethod.ExplicitEuler:
-            q_next = x[:, : self.nq] + x[:, self.nq :] * self.dt
-        else:
-            raise NotImplementedError
-        return torch.cat((q_next, qdot_next), dim=1)
-
-
-
-
-
-
