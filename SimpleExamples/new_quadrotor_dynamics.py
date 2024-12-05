@@ -1,87 +1,68 @@
-import numpy as np
-import torch 
+import torch
 from torch import Tensor
-from typing import Union, Tuple, Optional
-import pybullet as p
-import pybullet_data
-import gymnasium as gym
-from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
 
 class QuadrotorDynamics:
-    """
-    Quadrotor Dynamics.
-    x: state tensor
-    u: control tensor, representing RPM motor values
-    """
 
-    def integrateQ(self, quat, omega):
-        omega_norm = np.linalg.norm(omega)
-        p, q, r = omega
-        if np.isclose(omega_norm, 0):
-            return quat
-        lambda_ = np.array([
-            [ 0,  r, -q, p],
-            [-r,  0,  p, q],
-            [ q, -p,  0, r],
-            [-p, -q, -r, 0]
-        ]) * .5
-        theta = omega_norm * self.time_step / 2
-        quat = np.dot(np.eye(4) * np.cos(theta) + 2 / omega_norm * lambda_ * np.sin(theta), quat)
-        return quat
-
-    def __init__(self, m: float = 1.4, g: float = 9.81):
+    def __init__(self,
+                 m: float = 0.027, j_x: float = 2.3951e-5, j_y: float = 2.3951e-5, j_z: float = 3.2347e-5,
+                 arm_length: float = 0.0397, kf: float = 3.16e-10, km: float = 7.94e-12, g: float = 9.81,
+                 thrust2weight: float = 2.25, max_speed_kmh: float = 30., gnd_eff_coeff: float = 11.36859,
+                 prop_radius: float = 2.31348e-2, drag_coeff_xy: float = 9.1785e-7, drag_coeff_z: float = 10.311e-7,
+                 dw_coeff_1: float = 2267.18, dw_coeff_2: float = 0.16, dw_coeff_3: float = -0.11
+                 ):
+        """
+        Initializes quadrotor model with 6 degrees of freedom. Dynamics faithfully follow those described by Daniel
+        Mellinger in "Trajectory Generation and Control for Precise Aggressive Maneuvers with Quadrotors". Default
+        parameters were selected by Panerati et. al. in "Leawrning to Fly - a Gym Environment with PyBullet Physics
+        for Reinforcement Learning of Multi-agent Quadcopter Control".
+        :param m:               Mass of the quadrotor (kg)
+        :param j_x:             Moment of inertia around x-axis (kg·m²)
+        :param j_y:             Moment of inertia around y-axis (kg·m²)
+        :param j_z:             Moment of inertia around z-axis (kg·m²)
+        :param arm_length:      Distance from the center to a propeller (m)
+        :param kf:              Thrust coefficient
+        :param km:              Torque coefficient
+        :param g:               Gravitational acceleration (m/s²)
+        :param thrust2weight:   Thrust-to-weight ratio
+        :param max_speed_kmh:   Maximum speed (km/h)
+        :param gnd_eff_coeff:   Ground effect coefficient
+        :param prop_radius:     Propeller radius (m)
+        :param drag_coeff_xy:   Drag coefficient in XY plane
+        :param drag_coeff_z:    Drag coefficient in Z direction
+        :param dw_coeff_1:      Coefficients for downwash effect
+        :param dw_coeff_2:      Coefficients for downwash effect
+        :param dw_coeff_3:      Coefficients for downwash effect
+        """
         # Dimensions of state and control input
         self.nx = 12  # Number of state dimensions
         self.nu = 4   # Number of control inputs
-        self.m = 0.027  # Mass of the quadrotor (kg)
-        self.J_x = 2.3951e-5  # Moment of inertia around x-axis (kg·m²)
-        self.J_y = 2.3951e-5  # Moment of inertia around y-axis (kg·m²)
-        self.J_z = 3.2347e-5  # Moment of inertia around z-axis (kg·m²)
-        self.J = torch.diag([self.J_x, self.J_y, self.J_z])
-        self.J_INV = torch.linalg.inv(self.J)
-        self.arm_length = 0.0397  # Distance from the center to a propeller (m)
-        self.kf = 3.16e-10  # Thrust coefficient
-        self.km = 7.94e-12  # Torque coefficient
-        self.g = 9.81  # Gravitational acceleration (m/s²)
+        self.m = m  # Mass of the quadrotor (kg)
+        self.J_x = j_x  # Moment of inertia around x-axis (kg·m²)
+        self.J_y = j_y  # Moment of inertia around y-axis (kg·m²)
+        self.J_z = j_z  # Moment of inertia around z-axis (kg·m²)
+        self.J = torch.diag(torch.tensor[self.J_x, self.J_y, self.J_z])  # Moment of inertia matrix
+        self.J_INV = torch.linalg.inv(self.J)  # Inverse of the moment of inertia matrix
+        self.arm_length = arm_length  # Distance from the center to a propeller (m)
+        self.kf = kf  # Thrust coefficient
+        self.km = km  # Torque coefficient
+        self.g = g  # Gravitational acceleration (m/s²)
         # Additional properties
-        self.thrust2weight = 2.25  # Thrust-to-weight ratio
-        self.max_speed_kmh = 30  # Maximum speed (km/h)
-        self.gnd_eff_coeff = 11.36859  # Ground effect coefficient
-        self.prop_radius = 2.31348e-2  # Propeller radius (m)
-        self.drag_coeff_xy = 9.1785e-7  # Drag coefficient in XY plane
-        self.drag_coeff_z = 10.311e-7  # Drag coefficient in Z direction
-        self.dw_coeff_1 = 2267.18  # Coefficients for downwash effect
-        self.dw_coeff_2 = 0.16 
-        self.dw_coeff_3 = -0.11
-        self.time_step = 0.01
-
-    def compute_rotation_matrix(quat: Tensor) -> Tensor:
-        """
-        Compute the rotation matrix from roll, pitch, and yaw angles.
-        """
-        batch = quat.shape[0]
-        roll, pitch, yaw = quat[:, 0], quat[:, 1], quat[:, 2]
-        c_roll, s_roll = torch.cos(roll), torch.sin(roll)
-        c_pitch, s_pitch = torch.cos(pitch), torch.sin(pitch)
-        c_yaw, s_yaw = torch.cos(yaw), torch.sin(yaw)
-
-        R = torch.zeros((batch, 3, 3), device=roll.device)
-        R[:, 0, 0] = c_yaw * c_pitch
-        R[:, 0, 1] = c_yaw * s_pitch * s_roll - s_yaw * c_roll
-        R[:, 0, 2] = c_yaw * s_pitch * c_roll + s_yaw * s_roll
-        R[:, 1, 0] = s_yaw * c_pitch
-        R[:, 1, 1] = s_yaw * s_pitch * s_roll + c_yaw * c_roll
-        R[:, 1, 2] = s_yaw * s_pitch * c_roll - c_yaw * s_roll
-        R[:, 2, 0] = -s_pitch
-        R[:, 2, 1] = c_pitch * s_roll
-        R[:, 2, 2] = c_pitch * c_roll
-        return R
+        self.thrust2weight = thrust2weight  # Thrust-to-weight ratio
+        self.max_speed_kmh = max_speed_kmh  # Maximum speed (km/h)
+        self.gnd_eff_coeff = gnd_eff_coeff  # Ground effect coefficient
+        self.prop_radius = prop_radius  # Propeller radius (m)
+        self.drag_coeff_xy = drag_coeff_xy  # Drag coefficient in XY plane
+        self.drag_coeff_z = drag_coeff_z  # Drag coefficient in Z direction
+        self.dw_coeff_1 = dw_coeff_1  # Coefficients for downwash effect
+        self.dw_coeff_2 = dw_coeff_2
+        self.dw_coeff_3 = dw_coeff_3
 
     def forward(self, x: Tensor, u: Tensor) -> Tensor:
         """
-        Dynamics.
+        A forward pass of the model dynamics. Dynamics faithfully follow those described by Daniel Mellinger in
+        "Trajectory Generation and Control for Precise Aggressive Maneuvers with Quadrotors".
         x: state (batch, 12); 
-        u: controller input (batch, 3).
+        u: controller input (batch, 4).
         """
         # States
         batch = x.shape[0]
@@ -94,35 +75,29 @@ class QuadrotorDynamics:
         rpm_motor_1, rpm_motor_2, rpm_motor_3, rpm_motor_4 = (
             u[:, 0], u[:, 1], u[:, 2], u[:, 3])
 
-        forces = u**2 * self.kf # shape (batch, nu)
+        forces = (u**2) * self.kf # shape (batch, nu)
         thrust = torch.zeros(batch, 3)
         thrust[:, 2] = forces.sum(1)
         
-        quat = torch.concatenate((roll,pitch,yaw), dim=1) # shape (batch, 3)
+        quat = torch.stack((roll,pitch,yaw), dim=1) # shape (batch, 3)
         rotation = self.compute_rotation_matrix(quat) # shape (batch, 3, 3)
         # perform batch matrix multiplication
-        thrust_world_frame = torch.einsum('bmm,bm->bm', rotation, thrust)
-        # b = batch, m = 3
+        thrust_world_frame = torch.einsum('bmn,bn->bm', rotation, thrust)
+        # b = batch, m = 3, n = 3 (even though m=n, we use different letters to eliminate ambiguity)
         # add singleton dimension by unsqueezing so that the subtraction is done on every batch
         force_world_frame = thrust_world_frame - torch.tensor([0, 0, self.g]).unsqueeze(0)
         acc = force_world_frame / self.m
 
         # Angular Dynamics
-        ang_vels = torch.concatenate((ang_vel_x, ang_vel_y, ang_vel_z), dim=1) # shape (batch, 3)
-        z_torque = u**2*self.km
-        x_torque = (forces[:, 1] - forces[:, 3]) * self.L
-        y_torque = (-forces[:,0] + forces[:, 2]) * self.L
-        torques = torch.concatenate((x_torque, y_torque, z_torque), dim=1) # shape (batch, 3)
+        ang_vels = torch.stack((ang_vel_x, ang_vel_y, ang_vel_z), dim=1) # shape(batch, 3)
+        z_torque = (u**2) * self.km
+        x_torque = (forces[:, 1] - forces[:, 3]) * self.arm_length
+        y_torque = (-forces[:,0] + forces[:, 2]) * self.arm_length
+        torques = torch.stack((x_torque, y_torque, z_torque), dim=1) # shape (batch, 3)
         
-        torques = torques - torch.cross(ang_vels, torch.einsum('mm,bm->bm', self.J, ang_vels), dim=1)
-        angular_acc = torch.einsum('bmm,bm->bm', self.J_INV, torques)
-        # b = batch, m = 3
-
-        # Update State
-        vel = vel + self.time_step * angular_acc
-        angular_vel = angular_vel + self.time_step * angular_acc
-        pos = pos + self.time_step * vel
-        quat = self._integrateQ(quat, angular_vel, self.time_step)
+        torques = torques - torch.cross(ang_vels, torch.einsum('mn,bn->bm', self.J, ang_vels), dim=1)
+        angular_acc = torch.einsum('bmn,bn->bm', self.J_INV, torques)
+        # b = batch, m = 3, n = 3
 
         # Kinematic equations
         dx = torch.zeros_like(x)
@@ -133,6 +108,8 @@ class QuadrotorDynamics:
         return dx
 
     def linearized_dynamics(self, x, u):
+        # FIXME: This linearized dynamics are not correct. Ideally, the linearization should be cross-checked
+        # with a symbolic tool that Matlab and SymPy both provide.
         device = x.device
         batch_size = x.shape[0]
         A = torch.zeros((batch_size, self.nx, self.nx))
@@ -159,13 +136,81 @@ class QuadrotorDynamics:
 
         return A.to(device), B.to(device)
 
+    ## static methods ##
+    @staticmethod
+    def compute_rotation_matrix(quat: Tensor) -> Tensor:
+        """
+        Compute the rotation matrix from roll, pitch, and yaw angles.
+        :param quat:    Tensor containing the roll, pitch, and yaw angles for all batches
+        :return:        Rotation matrix using these angles to transform from body to world frame
+        """
+        batch = quat.shape[0]
+        roll, pitch, yaw = quat[:, 0], quat[:, 1], quat[:, 2]  # unpack angles
 
-    def linearized_observation(self, x):
-        batch_size = x.shape[0]
-        C = torch.zeros(batch_size, self.ny, self.nx, device=x.device)
-        C[:, 0] = 1
-        return C
+        # precompute trigonometric results
+        c_roll, s_roll = torch.cos(roll), torch.sin(roll)
+        c_pitch, s_pitch = torch.cos(pitch), torch.sin(pitch)
+        c_yaw, s_yaw = torch.cos(yaw), torch.sin(yaw)
 
+        # initialize and fill rotation matrix
+        R = torch.zeros((batch, 3, 3), device=roll.device)
+        R[:, 0, 0] = c_yaw * c_pitch
+        R[:, 0, 1] = c_yaw * s_pitch * s_roll - s_yaw * c_roll
+        R[:, 0, 2] = c_yaw * s_pitch * c_roll + s_yaw * s_roll
+        R[:, 1, 0] = s_yaw * c_pitch
+        R[:, 1, 1] = s_yaw * s_pitch * s_roll + c_yaw * c_roll
+        R[:, 1, 2] = s_yaw * s_pitch * c_roll - c_yaw * s_roll
+        R[:, 2, 0] = -s_pitch
+        R[:, 2, 1] = c_pitch * s_roll
+        R[:, 2, 2] = c_pitch * c_roll
+        return R
+
+    @staticmethod
+    def integrateQ(quat: Tensor, omega: Tensor, time_step: float) -> Tensor:
+        """
+        Performs careful integration to update the quaternion values (roll, pitch, yaw) from their rates (angular
+        velocity). For sufficiently small angle rates, the quaternion is kept constant for stability.
+        :param quat:      Tensor containing roll, pitch, and yaw angles for all batches
+        :param omega:     Tensor containing the angular velocities (roll rate, pitch rate, and yaw rate) for all batches
+        :param time_step: Discrete time step parameter
+        :return:          Updated quaternion values
+        """
+        next_quat = quat.clone()
+        omega_norm = torch.linalg.norm(omega, dim=1)
+        p, q, r = omega[:, 0], omega[:, 1], omega[:, 2]  # unpack angular rates
+        # mask to only update batches whose quaternion rates are not significantly small
+        update_mask = torch.logical_not(torch.isclose(omega_norm, torch.zeros_like(omega_norm)))
+        num_update = update_mask.sum().item()
+        if num_update == 0:
+            # no batches to update
+            return next_quat
+
+        # filter out angles and norms that will not be updated
+        quat = quat[update_mask]
+        p = p[update_mask]
+        q = q[update_mask]
+        r = r[update_mask]
+        omega_norm = omega_norm[update_mask]
+
+        # put angles into skew matrix form (so that we can do matrix multiplication instead of cross multiplication)
+        batch_zeros = torch.zeros_like(r)
+        lambda_ = torch.stack([
+            torch.stack([batch_zeros, r, -q, p], dim=1),
+            torch.stack([-r, batch_zeros, p, q], dim=1),
+            torch.stack([q, -p, batch_zeros, r], dim=1),
+            torch.stack([-p, -q, -r, batch_zeros], dim=1)
+        ], dim=1) * 0.5  # shape (batch, 4, 4)
+        theta = omega_norm * time_step / 2
+        # Intermediate calculation for calculating the next quaternion; Reshaping Tensors is another way to add singleton
+        # dimensions while also explicitly listing the shapes. Singleton dimensions allow for broadcasting, i.e. the
+        # torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) term produces a Tensor that has shape
+        # (num_update, 4, 4) where each 4x4 identity matrix is multiplied by its corresponding cos(theta) scalar value.
+        inter_quat = torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) + (2*torch.sin(theta)/omega_norm).reshape(num_update,1,1)*lambda_
+        # Formalize the next quaternion for the values that should be updated
+        next_quat[update_mask, :] = torch.einsum('bmn,bn->bn', inter_quat, quat)
+        return next_quat
+
+    ## properties ##
     @property
     def x_equilibrium(self):
         return torch.zeros((2,))
