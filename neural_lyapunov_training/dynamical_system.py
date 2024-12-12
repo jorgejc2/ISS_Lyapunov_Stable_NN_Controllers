@@ -174,23 +174,64 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
 
 
 class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
-        def forward(self, x, u):
+    """
+    q = [position_x, position_y, position_z, roll, pitch, yaw]
+    qdot = [velocity_x, velocity_y, velocity_z, roll rate, pitch rate, yaw rate]
+    x = [q, qdot]
+    qddot = f(x,u) = [velocity_x, velocity_y, velocity_z, roll rate, pitch rate, yaw rate, acceleration_x, acceleration_y, acceleration_z, roll acceleration, pitch acceleration, yaw acceleration]
+    q, qdot are vectors of length 6. qddot and x is a vector of length 12. qddot is essentially the derivative of x
+    Roll, pitch, and yaw should be updated using the integrateQdot method. Everything else may be updated using Euler integration.
+    """
+    def integrateQdot(self, quat_vel, omega, dt):
+
+        quat_vel = torch.tensor(quat_vel, dtype=torch.float32)
+        omega = torch.tensor(omega, dtype=torch.float32)
+        
+        omega_norm = torch.linalg.norm(omega)
+        pdot, qdot, rdot = omega
+        
+        if torch.isclose(omega_norm, torch.tensor(0.0)):
+            return quat_vel
+        
+        lambda_ = torch.tensor([
+            [0, rdot, -qdot, pdot],
+            [-rdot, 0, pdot, qdot],
+            [qdot, -pdot, 0, rdot],
+            [-pdot, -qdot, -rdot, 0]
+        ], dtype=torch.float32) * 0.5
+        
+        theta = omega_norm * dt / 2
+        
+        # Calculate updated quaternion
+        quat_vel = (torch.eye(4, dtype=torch.float32) * torch.cos(theta) +
+                    2 / omega_norm * lambda_ * torch.sin(theta)) @ quat_vel
+        
+        return quat_vel
+
+    def forward(self, x, u):
         """
         Compute x_next for a batch of x and u
-        """
+        x: 12 dimensional [q, qdot]
+        u: 4 dimensional
+        angular_acc: 3 dimensional [roll_acc, pitch_acc, yaw_acc]
+        """   
+        
         assert x.shape[0] == u.shape[0]
-        qddot = self.continuous_time_system.forward(x, u)
+
+        angular_acc = self.continuous_time_system.forward(x, u)[9, 12]
+        
         if self.velocity_integration == IntegrationMethod.ExplicitEuler:
-            qdot_next = x[:, self.nq :] + qddot * self.dt
+            angular_vel_next = self.integrateQdot(self, x[:, self.nq :], angular_acc, self.dt)
         else:
             raise NotImplementedError
         if self.position_integration == IntegrationMethod.MidPoint:
-            q_next = x[:, : self.nq] + (qdot_next + x[:, self.nq :]) / 2 * self.dt
+            q_next = x[:, : self.nq] + (angular_vel_next + x[:, self.nq :]) / 2 * self.dt
         elif self.position_integration == IntegrationMethod.ExplicitEuler:
             q_next = x[:, : self.nq] + x[:, self.nq :] * self.dt
         else:
             raise NotImplementedError
-        return torch.cat((q_next, qdot_next), dim=1)
+        
+        return torch.cat((q_next, angular_vel_next), dim=1)
 
 
 

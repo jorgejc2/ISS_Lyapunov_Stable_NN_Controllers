@@ -37,7 +37,6 @@ for i in range(1, n_time_steps):
     states[i] = new_state
     print(f"time {time:.2f} sec | state {to_numpy(new_state)} | input {to_numpy(control)}")
 
-
 # Plot results
 fig = plt.figure()
 ax = fig.add_subplot(111, projection='3d')
