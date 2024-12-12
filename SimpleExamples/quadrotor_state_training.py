@@ -84,7 +84,7 @@ def plot_V_heatmap(V, lower_limit, upper_limit, rho):
     return fig, ax, cbar
 
 
-@hydra.main(config_path="/home/jorgejc2/Documents/ClassRepos/ISS_Lyapunov_Stable_NN_Controllers/SimpleExamples/config",
+@hydra.main(config_path="./config",
             config_name="quadrotor_state_training.yaml")
 def main(cfg: DictConfig):
     OmegaConf.save(cfg, os.path.join(os.getcwd(), "config.yaml"))
@@ -92,15 +92,12 @@ def main(cfg: DictConfig):
     train_utils.set_seed(cfg.seed)
 
     dt = cfg.model.dt
-    quadrotor_tracking_continous = quadrotor_dynamics.QuadrotorDynamics(
-        speed=2.0, length=1.0, radius=10.0
-    )
+    quadrotor_tracking_continous = quadrotor_dynamics.QuadrotorDynamics()
     dynamics = dynamical_system.QuadrotorSystem(
-        quadrotor_tracking_continous,
-        dt=dt,
-        integration=dynamical_system.IntegrationMethod[cfg.model.integration],
+        quadrotor_tracking_continous
     )
-
+    #dt=dt
+    #integration=dynamical_system.IntegrationMethod[cfg.model.integration]
     controller = controllers.NeuralNetworkController(
         nlayer=4,
         in_dim=2,

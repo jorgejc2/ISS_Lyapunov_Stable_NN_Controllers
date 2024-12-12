@@ -235,7 +235,6 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         new_quat = QuadrotorDynamics.integrateQ(quat, angular_vel, self.dt)
         x_upper = x[:, self.nq:]  # current velocities
         x_lower = x[:, :self.nq]  # current positions
-        qddot_rest = qddot[:, r_mask]
 
         q_next, qdot_next = torch.zeros_like(x[:, : self.nq]), torch.zeros_like(x[:, : self.nq])
         q_next[:, a_mask] = new_quat
@@ -246,23 +245,23 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         else:
             raise NotImplementedError
         
-        # FIXME: Example, remove later
-        if self.position_integration == IntegrationMethod.MidPoint:
-            q_next = x[:, : self.nq] + (qdot_next + x[:, self.nq :]) / 2 * self.dt
-        elif self.position_integration == IntegrationMethod.ExplicitEuler:
-            q_next = x[:, : self.nq] + x[:, self.nq :] * self.dt
-        else:
-            raise NotImplementedError
+        # # FIXME: Example template, remove later
+        # if self.position_integration == IntegrationMethod.MidPoint:
+        #     q_next = x[:, : self.nq] + (qdot_next + x[:, self.nq :]) / 2 * self.dt
+        # elif self.position_integration == IntegrationMethod.ExplicitEuler:
+        #     q_next = x[:, : self.nq] + x[:, self.nq :] * self.dt
+        # else:
+        #     raise NotImplementedError
         
         # update the positions (q_next)
         x_upper_rest = x_upper[:, r_mask]
         x_lower_rest = x_lower[:, r_mask]
         if self.position_integration == IntegrationMethod.MidPoint:
-            q_next_rest = x_lower_rest + (qdot_next[:, r_mask] + x_upper_rest) / 2 * self.dt
+            qdot_next_rest = qdot_next[:, r_mask]
+            q_next_rest = x_lower_rest + (qdot_next_rest + x_upper_rest) / 2 * self.dt
             q_next[:, r_mask] = q_next_rest
         elif self.position_integration == IntegrationMethod.ExplicitEuler:
             q_next_rest = x_lower_rest + x_upper_rest * self.dt
-            q_next_rest = x[:, r_mask] + x[:, r_mask] * self.dt
             q_next[:, r_mask] = q_next_rest
         else:
             raise NotImplementedError

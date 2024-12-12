@@ -14,6 +14,445 @@ import pybullet_data
 import gymnasium as gym
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
 
+# FIXME: Make this as a clean import, but for now we hardcode our PyTorch dynamics
+import torch
+import torch.nn as nn
+from torch import Tensor
+from numpy import ndarray
+from typing import Optional, Union, Tuple
+from enum import Enum
+
+class QuadrotorDynamics:
+
+    def __init__(self,
+                 m: float = 0.027, j_x: float = 2.3951e-5, j_y: float = 2.3951e-5, j_z: float = 3.2347e-5,
+                 arm_length: float = 0.0397, kf: float = 3.16e-10, km: float = 7.94e-12, g: float = 9.81,
+                 thrust2weight: float = 2.25, max_speed_kmh: float = 30., gnd_eff_coeff: float = 11.36859,
+                 prop_radius: float = 2.31348e-2, drag_coeff_xy: float = 9.1785e-7, drag_coeff_z: float = 10.311e-7,
+                 dw_coeff_1: float = 2267.18, dw_coeff_2: float = 0.16, dw_coeff_3: float = -0.11
+                 ):
+        """
+        Initializes quadrotor model with 6 degrees of freedom. Dynamics faithfully follow those described by Daniel
+        Mellinger in "Trajectory Generation and Control for Precise Aggressive Maneuvers with Quadrotors". Default
+        parameters were selected by Panerati et. al. in "Leawrning to Fly - a Gym Environment with PyBullet Physics
+        for Reinforcement Learning of Multi-agent Quadcopter Control".
+        :param m:               Mass of the quadrotor (kg)
+        :param j_x:             Moment of inertia around x-axis (kg·m²)
+        :param j_y:             Moment of inertia around y-axis (kg·m²)
+        :param j_z:             Moment of inertia around z-axis (kg·m²)
+        :param arm_length:      Distance from the center to a propeller (m)
+        :param kf:              Thrust coefficient
+        :param km:              Torque coefficient
+        :param g:               Gravitational acceleration (m/s²)
+        :param thrust2weight:   Thrust-to-weight ratio
+        :param max_speed_kmh:   Maximum speed (km/h)
+        :param gnd_eff_coeff:   Ground effect coefficient
+        :param prop_radius:     Propeller radius (m)
+        :param drag_coeff_xy:   Drag coefficient in XY plane
+        :param drag_coeff_z:    Drag coefficient in Z direction
+        :param dw_coeff_1:      Coefficients for downwash effect
+        :param dw_coeff_2:      Coefficients for downwash effect
+        :param dw_coeff_3:      Coefficients for downwash effect
+        """
+        # Dimensions of state and control input
+        self.nx = 12  # Number of state dimensions
+        self.nu = 4   # Number of control inputs
+        self.m = m  # Mass of the quadrotor (kg)
+        self.J_x = j_x  # Moment of inertia around x-axis (kg·m²)
+        self.J_y = j_y  # Moment of inertia around y-axis (kg·m²)
+        self.J_z = j_z  # Moment of inertia around z-axis (kg·m²)
+        self.J = torch.diag(torch.tensor[self.J_x, self.J_y, self.J_z])  # Moment of inertia matrix
+        self.J_INV = torch.linalg.inv(self.J)  # Inverse of the moment of inertia matrix
+        self.arm_length = arm_length  # Distance from the center to a propeller (m)
+        self.kf = kf  # Thrust coefficient
+        self.km = km  # Torque coefficient
+        self.g = g  # Gravitational acceleration (m/s²)
+        # Additional properties
+        self.thrust2weight = thrust2weight  # Thrust-to-weight ratio
+        self.max_speed_kmh = max_speed_kmh  # Maximum speed (km/h)
+        self.gnd_eff_coeff = gnd_eff_coeff  # Ground effect coefficient
+        self.prop_radius = prop_radius  # Propeller radius (m)
+        self.drag_coeff_xy = drag_coeff_xy  # Drag coefficient in XY plane
+        self.drag_coeff_z = drag_coeff_z  # Drag coefficient in Z direction
+        self.dw_coeff_1 = dw_coeff_1  # Coefficients for downwash effect
+        self.dw_coeff_2 = dw_coeff_2
+        self.dw_coeff_3 = dw_coeff_3
+
+    def forward(self, x: Tensor, u: Tensor) -> Tensor:
+        """
+        A forward pass of the model dynamics. Dynamics faithfully follow those described by Daniel Mellinger in
+        "Trajectory Generation and Control for Precise Aggressive Maneuvers with Quadrotors".
+        x: state (batch, 12); 
+        u: controller input (batch, 4).
+        """
+        # States
+        batch = x.shape[0]
+        pos_x, pos_y, pos_z = x[:, 0], x[:, 1], x[:, 2]  # Positions
+        roll, pitch, yaw = x[:, 3], x[:, 4], x[:, 5]  # Angles (orientation)
+        vel_x, vel_y, vel_z = x[:, 6], x[:, 7], x[:, 8]  # Velocities
+        ang_vel_x, ang_vel_y, ang_vel_z = x[:, 9], x[:, 10], x[:, 11]  # Angular velocities
+
+        # Control inputs (motor RPMs)
+        rpm_motor_1, rpm_motor_2, rpm_motor_3, rpm_motor_4 = (
+            u[:, 0], u[:, 1], u[:, 2], u[:, 3])
+
+        forces = (u**2) * self.kf # shape (batch, nu)
+        thrust = torch.zeros(batch, 3)
+        thrust[:, 2] = forces.sum(1)
+        
+        quat = torch.stack((roll,pitch,yaw), dim=1) # shape (batch, 3)
+        rotation = self.compute_rotation_matrix(quat) # shape (batch, 3, 3)
+        # perform batch matrix multiplication
+        thrust_world_frame = torch.einsum('bmn,bn->bm', rotation, thrust)
+        # b = batch, m = 3, n = 3 (even though m=n, we use different letters to eliminate ambiguity)
+        # add singleton dimension by unsqueezing so that the subtraction is done on every batch
+        force_world_frame = thrust_world_frame - torch.tensor([0, 0, self.g]).unsqueeze(0)
+        acc = force_world_frame / self.m
+
+        # Angular Dynamics
+        ang_vels = torch.stack((ang_vel_x, ang_vel_y, ang_vel_z), dim=1) # shape(batch, 3)
+        z_torque = (u**2) * self.km
+        x_torque = (forces[:, 1] - forces[:, 3]) * self.arm_length
+        y_torque = (-forces[:,0] + forces[:, 2]) * self.arm_length
+        torques = torch.stack((x_torque, y_torque, z_torque), dim=1) # shape (batch, 3)
+        
+        torques = torques - torch.cross(ang_vels, torch.einsum('mn,bn->bm', self.J, ang_vels), dim=1)
+        angular_acc = torch.einsum('bmn,bn->bm', self.J_INV, torques)
+        # b = batch, m = 3, n = 3
+
+        # Kinematic equations
+        dx = torch.zeros_like(x)
+        dx[:, 0:3] = x[:, 3:6]  # Position derivatives (velocity)
+        dx[:, 3:6] = x[:, 6:9]  # Angular position derivatives (angular velocity)
+        dx[:, 6:9] = acc  # Velocity derivatives (acceleration)
+        dx[:, 9:12] = angular_acc  # Angular velocity derivatives (angular acceleration)
+        return dx
+
+    def linearized_dynamics(self, x, u):
+        # FIXME: This linearized dynamics are not correct. Ideally, the linearization should be cross-checked
+        # with a symbolic tool that Matlab and SymPy both provide.
+        device = x.device
+        batch_size = x.shape[0]
+        A = torch.zeros((batch_size, self.nx, self.nx))
+        B = torch.zeros((batch_size, self.nx, self.nu))
+        
+        # Position-velocity relationships
+        A[:, 0, 3] = 1  # dx1/dx4
+        A[:, 1, 4] = 1  # dx2/dx5
+        A[:, 2, 5] = 1  # dx3/dx6
+
+        # Linearized velocity relationships
+        A[:, 3, 7] = -self.g * torch.sin(x[:, 7])  # dx4/dx8 (pitch affects forward acceleration)
+        A[:, 4, 6] = self.g * torch.cos(x[:, 7]) * torch.sin(x[:, 6])  # dx5/dx7 (roll affects lateral acceleration)
+        A[:, 5, 6] = -self.g * torch.cos(x[:, 7]) * torch.cos(x[:, 6])  # dx6/dx7 (altitude affected by roll and pitch)
+
+        # Angular velocity-rotation relationships
+        A[:, 6, 9] = 1   # d(theta)/d(omega_x)
+        A[:, 7, 10] = 1  # d(phi)/d(omega_y)
+        A[:, 8, 11] = 1  # d(psi)/d(omega_z)
+       
+        B[:, 5, 0] = -1 / self.m  # Effect of thrust on vertical acceleration
+        B[:, 9, 1] = 1 / self.J_x  # Control effect of u2 (roll torque) on omega_x
+        B[:, 10, 2] = 1 / self.J_y  # Control effect of u3 (pitch torque) on omega_y
+
+        return A.to(device), B.to(device)
+
+    ## static methods ##
+    @staticmethod
+    def compute_rotation_matrix(quat: Tensor) -> Tensor:
+        """
+        Compute the rotation matrix from roll, pitch, and yaw angles.
+        :param quat:    Tensor containing the roll, pitch, and yaw angles for all batches
+        :return:        Rotation matrix using these angles to transform from body to world frame
+        """
+        batch = quat.shape[0]
+        roll, pitch, yaw = quat[:, 0], quat[:, 1], quat[:, 2]  # unpack angles
+
+        # precompute trigonometric results
+        c_roll, s_roll = torch.cos(roll), torch.sin(roll)
+        c_pitch, s_pitch = torch.cos(pitch), torch.sin(pitch)
+        c_yaw, s_yaw = torch.cos(yaw), torch.sin(yaw)
+
+        # initialize and fill rotation matrix
+        R = torch.zeros((batch, 3, 3), device=roll.device)
+        R[:, 0, 0] = c_yaw * c_pitch
+        R[:, 0, 1] = c_yaw * s_pitch * s_roll - s_yaw * c_roll
+        R[:, 0, 2] = c_yaw * s_pitch * c_roll + s_yaw * s_roll
+        R[:, 1, 0] = s_yaw * c_pitch
+        R[:, 1, 1] = s_yaw * s_pitch * s_roll + c_yaw * c_roll
+        R[:, 1, 2] = s_yaw * s_pitch * c_roll - c_yaw * s_roll
+        R[:, 2, 0] = -s_pitch
+        R[:, 2, 1] = c_pitch * s_roll
+        R[:, 2, 2] = c_pitch * c_roll
+        return R
+
+    @staticmethod
+    def integrateQ(quat: Tensor, omega: Tensor, time_step: float) -> Tensor:
+        """
+        Performs careful integration to update the quaternion values (roll, pitch, yaw) from their rates (angular
+        velocity). For sufficiently small angle rates, the quaternion is kept constant for stability.
+        :param quat:      Tensor containing roll, pitch, and yaw angles for all batches
+        :param omega:     Tensor containing the angular velocities (roll rate, pitch rate, and yaw rate) for all batches
+        :param time_step: Discrete time step parameter
+        :return:          Updated quaternion values
+        """
+        next_quat = quat.clone()
+        omega_norm = torch.linalg.norm(omega, dim=1)
+        p, q, r = omega[:, 0], omega[:, 1], omega[:, 2]  # unpack angular rates
+        # mask to only update batches whose quaternion rates are not significantly small
+        update_mask = torch.logical_not(torch.isclose(omega_norm, torch.zeros_like(omega_norm)))
+        num_update = update_mask.sum().item()
+        if num_update == 0:
+            # no batches to update
+            return next_quat
+
+        # filter out angles and norms that will not be updated
+        quat = quat[update_mask]
+        p = p[update_mask]
+        q = q[update_mask]
+        r = r[update_mask]
+        omega_norm = omega_norm[update_mask]
+
+        # put angles into skew matrix form (so that we can do matrix multiplication instead of cross multiplication)
+        batch_zeros = torch.zeros_like(r)
+        lambda_ = torch.stack([
+            torch.stack([batch_zeros, r, -q, p], dim=1),
+            torch.stack([-r, batch_zeros, p, q], dim=1),
+            torch.stack([q, -p, batch_zeros, r], dim=1),
+            torch.stack([-p, -q, -r, batch_zeros], dim=1)
+        ], dim=1) * 0.5  # shape (batch, 4, 4)
+        theta = omega_norm * time_step / 2
+        # Intermediate calculation for calculating the next quaternion; Reshaping Tensors is another way to add singleton
+        # dimensions while also explicitly listing the shapes. Singleton dimensions allow for broadcasting, i.e. the
+        # torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) term produces a Tensor that has shape
+        # (num_update, 4, 4) where each 4x4 identity matrix is multiplied by its corresponding cos(theta) scalar value.
+        inter_quat = torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) + (2*torch.sin(theta)/omega_norm).reshape(num_update,1,1)*lambda_
+        # Formalize the next quaternion for the values that should be updated
+        next_quat[update_mask, :] = torch.einsum('bmn,bn->bn', inter_quat, quat)
+        return next_quat
+
+    ## properties ##
+    @property
+    def x_equilibrium(self):
+        return torch.zeros((2,))
+
+    @property
+    def u_equilibrium(self):
+        return torch.zeros((1,))
+
+class DiscreteTimeSystem(nn.Module):
+    """
+    Defines the interface for the discrete dynamical system.
+    """
+
+    def __init__(self, nx, nu, *args, **kwargs):
+        super(DiscreteTimeSystem, self).__init__(*args, **kwargs)
+        self.nx = nx
+        self.nu = nu
+        pass
+
+    def forward(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        pass
+
+    @property
+    def x_equilibrium(self) -> torch.Tensor:
+        raise NotImplementedError
+
+    @property
+    def u_equilibrium(self) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class IntegrationMethod(Enum):
+    ExplicitEuler = 1
+    MidPoint = 2
+
+class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
+    """
+    This discrete-time system is constructed by discretizing a continuous time
+    second-order dynamical system in time.
+    """
+
+    def __init__(
+        self,
+        continuous_time_system,
+        dt: float,
+        position_integration: IntegrationMethod = IntegrationMethod.MidPoint,
+        velocity_integration: IntegrationMethod = IntegrationMethod.ExplicitEuler,
+    ):
+        """
+        Args:
+          continuous_time_system: This system has to define a function
+          qddot = f(x, u) where x = [q, qdot].
+        """
+        super(SecondOrderDiscreteTimeSystem, self).__init__(
+            continuous_time_system.nx, continuous_time_system.nu
+        )
+        assert callable(getattr(continuous_time_system, "forward"))
+        self.nx = continuous_time_system.nx
+        self.nu = continuous_time_system.nu
+        self.nq = int(self.nx / 2)
+        self.dt = dt
+        self.velocity_integration = velocity_integration
+        self.position_integration = position_integration
+        self.continuous_time_system = continuous_time_system
+        self.Ix = torch.eye(self.nx)
+
+    def forward(self, x, u):
+        """
+        Compute x_next for a batch of x and u
+        """
+        assert x.shape[0] == u.shape[0]
+        qddot = self.continuous_time_system.forward(x, u)
+        if self.velocity_integration == IntegrationMethod.ExplicitEuler:
+            qdot_next = x[:, self.nq :] + qddot * self.dt
+        else:
+            raise NotImplementedError
+        if self.position_integration == IntegrationMethod.MidPoint:
+            q_next = x[:, : self.nq] + (qdot_next + x[:, self.nq :]) / 2 * self.dt
+        elif self.position_integration == IntegrationMethod.ExplicitEuler:
+            q_next = x[:, : self.nq] + x[:, self.nq :] * self.dt
+        else:
+            raise NotImplementedError
+        return torch.cat((q_next, qdot_next), dim=1)
+
+    def linearized_dynamics(self, x, u):
+        Ac, Bc = self.continuous_time_system.linearized_dynamics(x, u)
+        Ad = self.dt * Ac + self.Ix.to(x.device)
+        Bd = self.dt * Bc
+        return Ad, Bd
+
+    # def output_feedback_linearized_lyapunov(self, K, L):
+    #     """
+    #     Given the control gain K and observer gain L, solve the discrete-time Lyapunov equation
+    #     for the closed-loop system with the states and controls at equilibrium.
+    #     The linearized dynamics are computed from the continuous-time system with Explicit Euler method.
+    #     """
+    #     x0 = self.x_equilibrium.unsqueeze(0)
+    #     Ad, Bd = self.continuous_time_system.linearized_dynamics(
+    #         x0, self.u_equilibrium.unsqueeze(0)
+    #     )
+    #     Ad = Ad.squeeze().detach().numpy()
+    #     Bd = Bd.squeeze().detach().numpy()
+    #     C = (
+    #         self.continuous_time_system.linearized_observation(x0)
+    #         .squeeze()
+    #         .detach()
+    #         .numpy()
+    #     )
+    #     Acl = np.vstack(
+    #         (
+    #             np.hstack((Ad + Bd @ K, -Bd @ K)),
+    #             np.hstack((np.zeros([self.nx, self.nx]), Ad - L @ C)),
+    #         )
+    #     )
+    #     Acl[np.abs(Acl) <= 1e-6] = 0
+    #     S = control.dlyap(Acl, np.eye(2 * self.nx))
+    #     return S
+
+    @property
+    def x_equilibrium(self):
+        return self.continuous_time_system.x_equilibrium
+
+    @property
+    def u_equilibrium(self):
+        return self.continuous_time_system.u_equilibrium
+
+
+class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
+
+    def __init__(self, **kwargs):
+        super().__init__(kwargs)
+        pre_mask = np.zeros(12)
+        pre_mask[3:6] = 1
+        self._a_mask = np.argwhere(pre_mask == 1)[0].tolist()  # angular mask
+        self._r_mask = np.argwhere(pre_mask == 1)[0].tolist()  # rest mask
+        
+    """
+    q = [position_x, position_y, position_z, roll, pitch, yaw]
+    qdot = [velocity_x, velocity_y, velocity_z, roll rate, pitch rate, yaw rate]
+    x = [q, qdot]
+    qddot = f(x,u) = [velocity_x, velocity_y, velocity_z, roll rate, pitch rate, yaw rate, acceleration_x, acceleration_y, acceleration_z, roll acceleration, pitch acceleration, yaw acceleration]
+    q, qdot are vectors of length 6. qddot and x is a vector of length 12. qddot is essentially the derivative of x
+    Roll, pitch, and yaw should be updated using the integrateQdot method. Everything else may be updated using Euler integration.
+    """
+    def integrateQdot(self, quat_vel, omega, dt):
+
+        quat_vel = torch.tensor(quat_vel, dtype=torch.float32)
+        omega = torch.tensor(omega, dtype=torch.float32)
+        
+        omega_norm = torch.linalg.norm(omega)
+        pdot, qdot, rdot = omega
+        
+        if torch.isclose(omega_norm, torch.tensor(0.0)):
+            return quat_vel
+        
+        lambda_ = torch.tensor([
+            [0, rdot, -qdot, pdot],
+            [-rdot, 0, pdot, qdot],
+            [qdot, -pdot, 0, rdot],
+            [-pdot, -qdot, -rdot, 0]
+        ], dtype=torch.float32) * 0.5
+        
+        theta = omega_norm * dt / 2
+        
+        # Calculate updated quaternion
+        quat_vel = (torch.eye(4, dtype=torch.float32) * torch.cos(theta) +
+                    2 / omega_norm * lambda_ * torch.sin(theta)) @ quat_vel
+        
+        return quat_vel
+
+    def forward(self, x, u):
+        """
+        Compute x_next for a batch of x and u
+        x: 12 dimensional [q, qdot]
+        u: 4 dimensional
+        angular_acc: 3 dimensional [roll_acc, pitch_acc, yaw_acc]
+        """   
+        
+        assert x.shape[0] == u.shape[0]
+
+        a_mask = self._a_mask
+        r_mask = self._r_mask
+        quat = x[:, a_mask]  # Angles (orientation)
+        qddot = self.continuous_time_system.forard(x, u)
+        angular_vel = qddot[:, a_mask]
+        new_quat = QuadrotorDynamics.integrateQ(quat, angular_vel, self.dt)
+        x_upper = x[:, self.nq:]  # current velocities
+        x_lower = x[:, :self.nq]  # current positions
+
+        q_next, qdot_next = torch.zeros_like(x[:, : self.nq]), torch.zeros_like(x[:, : self.nq])
+        q_next[:, a_mask] = new_quat
+
+        # update the velocities (qdot_next)
+        if self.velocity_integration == IntegrationMethod.ExplicitEuler:
+            qdot_next = x_upper + qddot * self.dt
+        else:
+            raise NotImplementedError
+        
+        # # FIXME: Example template, remove later
+        # if self.position_integration == IntegrationMethod.MidPoint:
+        #     q_next = x[:, : self.nq] + (qdot_next + x[:, self.nq :]) / 2 * self.dt
+        # elif self.position_integration == IntegrationMethod.ExplicitEuler:
+        #     q_next = x[:, : self.nq] + x[:, self.nq :] * self.dt
+        # else:
+        #     raise NotImplementedError
+        
+        # update the positions (q_next)
+        x_upper_rest = x_upper[:, r_mask]
+        x_lower_rest = x_lower[:, r_mask]
+        if self.position_integration == IntegrationMethod.MidPoint:
+            qdot_next_rest = qdot_next[:, r_mask]
+            q_next_rest = x_lower_rest + (qdot_next_rest + x_upper_rest) / 2 * self.dt
+            q_next[:, r_mask] = q_next_rest
+        elif self.position_integration == IntegrationMethod.ExplicitEuler:
+            q_next_rest = x_lower_rest + x_upper_rest * self.dt
+            q_next[:, r_mask] = q_next_rest
+        else:
+            raise NotImplementedError
+        
+        return torch.cat((q_next, qdot_next), dim=1)
+
 
 class BaseAviary(gym.Env):
     """Base class for "drone aviary" Gym environments."""
