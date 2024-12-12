@@ -84,7 +84,8 @@ def plot_V_heatmap(V, lower_limit, upper_limit, rho):
     return fig, ax, cbar
 
 
-@hydra.main(config_path="./config", config_name="quadrotor_state_training.yaml")
+@hydra.main(config_path="/home/jorgejc2/Documents/ClassRepos/ISS_Lyapunov_Stable_NN_Controllers/SimpleExamples/config",
+            config_name="quadrotor_state_training.yaml")
 def main(cfg: DictConfig):
     OmegaConf.save(cfg, os.path.join(os.getcwd(), "config.yaml"))
 

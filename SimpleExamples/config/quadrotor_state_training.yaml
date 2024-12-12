@@ -1,6 +1,6 @@
 defaults:
+  - user: quadrotor_state_training_default
   - train_template
-  - quadrotor_state_training_default
 
 hydra:
   run:
