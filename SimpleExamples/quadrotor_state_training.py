@@ -3,6 +3,7 @@ import hydra
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
+import quadrotor_dynamics
 from omegaconf import DictConfig, OmegaConf
 import scipy
 import torch
@@ -15,13 +16,13 @@ import neural_lyapunov_training.models as models
 import neural_lyapunov_training.path_tracking as path_tracking
 import neural_lyapunov_training.train_utils as train_utils
 
-device = torch.device("cuda")
+device = torch.device("cpu")
 dtype = torch.float
 
-def compute_lqr(path_tracking_continuous: path_tracking.PathTrackingDynamics):
-    x_equilibrium = path_tracking_continuous.x_equilibrium.to(device)
-    u_equilibrium = path_tracking_continuous.u_equilibrium.to(device)
-    A_batch, B_batch = path_tracking_continuous.linearized_dynamics(
+def compute_lqr(quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics):
+    x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
+    u_equilibrium = quadrotor_tracking_continous.u_equilibrium.to(device)
+    A_batch, B_batch = quadrotor_tracking_continous.linearized_dynamics(
         x_equilibrium.unsqueeze(0), u_equilibrium.unsqueeze(0)
     )
     A = A_batch.squeeze(0).cpu().detach().numpy()
@@ -33,13 +34,13 @@ def compute_lqr(path_tracking_continuous: path_tracking.PathTrackingDynamics):
     return K, S
 
 def approximate_lqr(
-    path_tracking_continuous: path_tracking.PathTrackingDynamics,
+    quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics,
     controller: controllers.NeuralNetworkController,
     lyapunov_nn: lyapunov.NeuralNetworkLyapunov,
     upper_limit: torch.Tensor,
     logger,
 ):
-    K, S = compute_lqr(path_tracking_continuous)
+    K, S = compute_lqr(quadrotor_tracking_continous)
     K_torch = torch.from_numpy(K).type(dtype).to(device)
     S_torch = torch.from_numpy(S).type(dtype).to(device)
     x = (torch.rand((100000, 2), dtype=dtype, device=device) - 0.5) * 2 * upper_limit
@@ -65,7 +66,6 @@ def plot_V_heatmap(V, lower_limit, upper_limit, rho):
     grid_x, grid_y = torch.meshgrid(x_ticks, y_ticks)
     with torch.no_grad():
         V_val = V.forward(torch.stack((grid_x, grid_y), dim=2)).squeeze(2)
-
     V_val = V_val.cpu()
     grid_x = grid_x.cpu()
     grid_y = grid_y.cpu()
@@ -84,18 +84,18 @@ def plot_V_heatmap(V, lower_limit, upper_limit, rho):
     return fig, ax, cbar
 
 
-@hydra.main(config_path="./config", config_name="path_tracking_state_training.yaml")
+@hydra.main(config_path="./config", config_name="quadrotor_state_training.yaml")
 def main(cfg: DictConfig):
     OmegaConf.save(cfg, os.path.join(os.getcwd(), "config.yaml"))
 
     train_utils.set_seed(cfg.seed)
 
     dt = cfg.model.dt
-    path_tracking_continuous = path_tracking.PathTrackingDynamics(
+    quadrotor_tracking_continous = quadrotor_dynamics.QuadrotorDynamics(
         speed=2.0, length=1.0, radius=10.0
     )
-    dynamics = dynamical_system.FirstOrderDiscreteTimeSystem(
-        path_tracking_continuous,
+    dynamics = dynamical_system.QuadrotorSystem(
+        quadrotor_tracking_continous,
         dt=dt,
         integration=dynamical_system.IntegrationMethod[cfg.model.integration],
     )
@@ -108,14 +108,14 @@ def main(cfg: DictConfig):
         clip_output="clamp",
         u_lo=torch.tensor([-0.84]),
         u_up=torch.tensor([0.84]),
-        x_equilibrium=path_tracking_continuous.x_equilibrium,
-        u_equilibrium=path_tracking_continuous.u_equilibrium,
+        x_equilibrium=quadrotor_tracking_continous.x_equilibrium,
+        u_equilibrium=quadrotor_tracking_continous.u_equilibrium,
     )
     controller.eval()
 
     absolute_output = True
     if cfg.model.lyapunov.quadratic:
-        _, S = compute_lqr(path_tracking_continuous)
+        _, S = compute_lqr(quadrotor_tracking_continous)
         S_torch = torch.from_numpy(S).type(dtype).to(device)
         R = torch.linalg.cholesky(S_torch)
         lyapunov_nn = lyapunov.NeuralNetworkQuadraticLyapunov(
@@ -127,7 +127,7 @@ def main(cfg: DictConfig):
         )
     else:
         lyapunov_nn = lyapunov.NeuralNetworkLyapunov(
-            goal_state=path_tracking_continuous.x_equilibrium,
+            goal_state=quadrotor_tracking_continous.x_equilibrium,
             hidden_widths=cfg.model.lyapunov.hidden_widths,
             x_dim=2,
             R_rows=3,
@@ -157,7 +157,7 @@ def main(cfg: DictConfig):
     logger = logging.getLogger(__name__)
     if cfg.approximate_lqr:
         approximate_lqr(
-            path_tracking_continuous, controller, lyapunov_nn, upper_limit, logger
+            quadrotor_tracking_continous, controller, lyapunov_nn, upper_limit, logger
         )
         torch.save(
             {"state_dict": derivative_lyaloss.state_dict()},
@@ -356,7 +356,7 @@ def main(cfg: DictConfig):
         rho,
         lower_limit,
         upper_limit,
-        path_tracking_continuous.nx,
+        quadrotor_tracking_continous.nx,
         derivative_lyaloss.x_boundary,
     )
     fig.show()

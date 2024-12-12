@@ -3,6 +3,7 @@ import torch.nn as nn
 from enum import Enum
 import numpy as np
 import control
+from new_quadrotor_dynamics import QuadrotorDynamics
 
 
 class DiscreteTimeSystem(nn.Module):
@@ -174,6 +175,14 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
 
 
 class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
+
+    def __init__(self, **kwargs):
+        super().__init__(kwargs)
+        pre_mask = np.zeros(12)
+        pre_mask[3:6] = 1
+        self._a_mask = np.argwhere(pre_mask == 1)[0].tolist()  # angular mask
+        self._r_mask = np.argwhere(pre_mask == 1)[0].tolist()  # rest mask
+        
     """
     q = [position_x, position_y, position_z, roll, pitch, yaw]
     qdot = [velocity_x, velocity_y, velocity_z, roll rate, pitch rate, yaw rate]
@@ -218,21 +227,47 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         
         assert x.shape[0] == u.shape[0]
 
-        angular_acc = self.continuous_time_system.forward(x, u)[9, 12]
-        
+        a_mask = self._a_mask
+        r_mask = self._r_mask
+        quat = x[:, a_mask]  # Angles (orientation)
+        qddot = self.continuous_time_system.forard(x, u)
+        angular_vel = qddot[:, a_mask]
+        new_quat = QuadrotorDynamics.integrateQ(quat, angular_vel, self.dt)
+        x_upper = x[:, self.nq:]  # current velocities
+        x_lower = x[:, :self.nq]  # current positions
+        qddot_rest = qddot[:, r_mask]
+
+        q_next, qdot_next = torch.zeros_like(x[:, : self.nq]), torch.zeros_like(x[:, : self.nq])
+        q_next[:, a_mask] = new_quat
+
+        # update the velocities (qdot_next)
         if self.velocity_integration == IntegrationMethod.ExplicitEuler:
-            angular_vel_next = self.integrateQdot(self, x[:, self.nq :], angular_acc, self.dt)
+            qdot_next = x_upper + qddot * self.dt
         else:
             raise NotImplementedError
+        
+        # FIXME: Example, remove later
         if self.position_integration == IntegrationMethod.MidPoint:
-            q_next = x[:, : self.nq] + (angular_vel_next + x[:, self.nq :]) / 2 * self.dt
+            q_next = x[:, : self.nq] + (qdot_next + x[:, self.nq :]) / 2 * self.dt
         elif self.position_integration == IntegrationMethod.ExplicitEuler:
             q_next = x[:, : self.nq] + x[:, self.nq :] * self.dt
         else:
             raise NotImplementedError
         
-        return torch.cat((q_next, angular_vel_next), dim=1)
-
+        # update the positions (q_next)
+        x_upper_rest = x_upper[:, r_mask]
+        x_lower_rest = x_lower[:, r_mask]
+        if self.position_integration == IntegrationMethod.MidPoint:
+            q_next_rest = x_lower_rest + (qdot_next[:, r_mask] + x_upper_rest) / 2 * self.dt
+            q_next[:, r_mask] = q_next_rest
+        elif self.position_integration == IntegrationMethod.ExplicitEuler:
+            q_next_rest = x_lower_rest + x_upper_rest * self.dt
+            q_next_rest = x[:, r_mask] + x[:, r_mask] * self.dt
+            q_next[:, r_mask] = q_next_rest
+        else:
+            raise NotImplementedError
+        
+        return torch.cat((q_next, qdot_next), dim=1)
 
 
 
