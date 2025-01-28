@@ -91,7 +91,7 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
     def __init__(
         self,
         continuous_time_system,
-        dt: float,
+        dt = 0.01,
         position_integration: IntegrationMethod = IntegrationMethod.MidPoint,
         velocity_integration: IntegrationMethod = IntegrationMethod.ExplicitEuler,
     ):
@@ -100,7 +100,7 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
           continuous_time_system: This system has to define a function
           qddot = f(x, u) where x = [q, qdot].
         """
-        super(SecondOrderDiscreteTimeSystem, self).__init__(
+        super(SecondOrderDiscreteTimeSystem(QuadrotorDynamics), self).__init__(
             continuous_time_system.nx, continuous_time_system.nu
         )
         assert callable(getattr(continuous_time_system, "forward"))
@@ -176,8 +176,8 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
 
 class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
 
-    def __init__(self, **kwargs):
-        super().__init__(kwargs)
+    def __init__(self, continuous_system, **kwargs):
+        super().__init__(continuous_system, **kwargs) #fix dt later
         pre_mask = np.zeros(12)
         pre_mask[3:6] = 1
         self._a_mask = np.argwhere(pre_mask == 1)[0].tolist()  # angular mask

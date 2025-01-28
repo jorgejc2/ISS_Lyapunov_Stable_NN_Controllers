@@ -94,10 +94,9 @@ def main(cfg: DictConfig):
     dt = cfg.model.dt
     quadrotor_tracking_continous = quadrotor_dynamics.QuadrotorDynamics()
     dynamics = dynamical_system.QuadrotorSystem(
-        quadrotor_tracking_continous
-    )
-    #dt=dt
-    #integration=dynamical_system.IntegrationMethod[cfg.model.integration]
+        quadrotor_tracking_continous,
+        dt=dt)
+   
     controller = controllers.NeuralNetworkController(
         nlayer=4,
         in_dim=2,
