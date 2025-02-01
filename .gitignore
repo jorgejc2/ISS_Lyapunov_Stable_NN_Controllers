@@ -12,3 +12,6 @@ models/lyaloss*
 *.egg-info
 verification/specs/bisect*.*
 verification/out*
+
+# ignore vscode extensions
+.vscode/
