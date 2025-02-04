@@ -370,28 +370,43 @@ def linearize_sympy():
     m, g, Jx, Jy, Jz = symbols('m g Jx Jy Jz')
     fx, fy, fz = symbols('fx fy fz')
     taux, tauy, tauz = symbols('taux tauy tauz')
+    J_x: float = 0.054,
+    J_y: float = 0.054
+    J_z: float = 0.104
+    # Translational dynamics (position derivatives)
+    dx1 = cos(x8) * cos(x9) * x4 + (sin(x7) * sin(x8) * cos(x9) - cos(x7) * sin(x9)) * x5 + (cos(x7) * sin(x8) * cos(x9) + sin(x7) * sin(x9)) * x6
+    dx2 = cos(x8) * sin(x9) * x4 + (sin(x7) * sin(x8) * sin(x9) + cos(x7) * cos(x9)) * x5 + (cos(x7) * sin(x8) * sin(x9) - sin(x7) * cos(x9)) * x6
+    dx3 = sin(x8) * x4 - sin(x7) * cos(x8) * x5 - cos(x7) * cos(x8) * x6
 
-    # Define dynamics vector
+    # Linear acceleration (body frame)
+    dx4 = x12 * x5 - x11 * x6 - g * sin(x8)
+    dx5 = x10 * x6 - x12 * x4 + g * cos(x8) * sin(x7)
+    dx6 = x11 * x4 - x10 * x5 + g * cos(x8) * cos(x7) - u1 / m
+
+    # Rotational dynamics (angles)
+    dx7 = x10 + sin(x7) * tan(x8) * x11 + cos(x7) * tan(x8) * x12
+    dx8 = cos(x7) * x11 - sin(x7) * x12
+    dx9 = (sin(x7) / cos(x8)) * x11 - (cos(x7) / cos(x8)) * x12
+
+    # Angular accelerations
+    dx10 = ((J_y - J_z) / J_x) * x11 * x12 + u2 / J_x
+    dx11 = ((J_z - J_x) / J_y) * x10 * x12 + u3 / J_y
+    dx12 = ((J_x - J_y) / J_z) * x10 * x11 + t_yaw / J_z
+
+    # Concatenate dynamics into a single vector
     dynamics_vector = Matrix([
-        # Position derivatives (world frame velocities)
-        vel_x * cos(psi) * cos(theta) + vel_y * (sin(phi) * sin(theta) * cos(psi) - cos(phi) * sin(psi)) + vel_z * (cos(phi) * sin(theta) * cos(psi) + sin(phi) * sin(psi)),
-        vel_x * sin(psi) * cos(theta) + vel_y * (sin(phi) * sin(theta) * sin(psi) + cos(phi) * cos(psi)) + vel_z * (cos(phi) * sin(theta) * sin(psi) - sin(phi) * cos(psi)),
-       -vel_x * sin(theta) + vel_y * sin(phi) * cos(theta) + vel_z * cos(phi) * cos(theta),
-
-        # Angular rate transformations
-        phi_dot + psi_dot * cos(phi) * tan(theta) + theta_dot * sin(phi) * tan(theta),
-        phi_dot * cos(phi) - theta_dot * sin(phi),
-        psi_dot / cos(theta) + theta_dot * sin(phi) / cos(theta),
-
-        # Linear accelerations (body frame)
-        (g * m * sin(theta) - m * phi_dot * vel_z + m * theta_dot * vel_y) / m,
-        (-g * m * sin(phi) * cos(theta) + m * psi_dot * vel_z - m * theta_dot * vel_x) / m,
-        (fz - g * m * cos(phi) * cos(theta) + m * phi_dot * vel_x - m * psi_dot * vel_y) / m,
-
-        # Angular accelerations
-        (Jy * phi_dot * theta_dot - Jz * phi_dot * theta_dot + taux) / Jx,
-        (-Jx * psi_dot * theta_dot + Jz * psi_dot * theta_dot + tauy) / Jy,
-        (Jx * phi_dot * psi_dot - Jy * phi_dot * psi_dot + tauz) / Jz
+        dx1,
+        dx2,
+        dx3,
+        dx4,
+        dx5,
+        dx6,
+        dx7,
+        dx8,
+        dx9,
+        dx10,
+        dx11,
+        dx12
     ])
 
     # Define variables with respect to which to compute Jacobian
