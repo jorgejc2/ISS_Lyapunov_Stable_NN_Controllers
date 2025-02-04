@@ -122,6 +122,9 @@ def main(cfg: DictConfig):
 
     train_utils.set_seed(cfg.seed)
 
+
+    # Initializes the Pendulum Dynamical model as well as a second order discrete time system
+    # to update this model.
     dt = cfg.model.dt
     pendulum_continuous = pendulum.PendulumDynamics(m=0.15, l=0.5, beta=0.1)
     dynamics = dynamical_system.SecondOrderDiscreteTimeSystem(
@@ -135,6 +138,8 @@ def main(cfg: DictConfig):
         ],
     )
 
+    # Initialize a neural network controller to steer the system towards equilibrium. The
+    # output is typically clamped to reflect real-world actuator limitations.
     controller = controllers.NeuralNetworkController(
         nlayer=cfg.model.controller_nlayer,
         in_dim=2,
@@ -150,6 +155,8 @@ def main(cfg: DictConfig):
 
     absolute_output = True
     if cfg.model.lyapunov.quadratic:
+        # A quadratic neural network has its output taking the form:
+        #
         _, S = compute_lqr(pendulum_continuous)
         S_torch = torch.from_numpy(S).type(dtype).to(device)
         R = torch.linalg.cholesky(S_torch)

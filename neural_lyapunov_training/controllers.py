@@ -2,53 +2,63 @@ import torch
 import torch.nn as nn
 import numpy as np
 from scipy import linalg as la
-
+from torch import Tensor
+from numpy import ndarray
+from typing import Union, Tuple, Optional, List
 
 class LinearController(nn.Module):
     """
     Simple linear controller.
     """
 
-    def __init__(self, K, u_equilibrium, trainable=True, **kwargs):
+    def __init__(self, K: Tensor, u_equilibrium: Tensor, trainable: bool=True, **kwargs):
         """
         Args:
           K: the coefficients of the linear controller.
           u_equilibrium: the controller output at equilibrium.
         """
         super().__init__()
-        self.u_equilibrium = u_equilibrium
+        self.register_buffer('u_equilibrium', u_equilibrium.clone().detach())
+        # self.u_equilibrium = u_equilibrium
         self.trainable = trainable
         if trainable:
+            # When adding custom parameters to a neural network in PyTorch that we want to integrate
+            # seamlessly, we use this function. This is important for backpropagation and ensuring
+            # that the parameter gets sent to the correct device (CPU/GPU)
             self.register_parameter(
                 name="K", param=torch.nn.Parameter(K.clone().detach())
             )
         else:
-            self.K = K.clone().requires_grad_(False)
+            # Fixed/static parameters that are part of the network but should not be updated
+            # are registered as a buffer instead
+            self.register_buffer("K", K.clone().detach())
+            # self.K = K.clone().requires_grad_(False)
 
     def forward(self, x):
         return torch.nn.functional.linear(x, self.K, self.u_equilibrium)
 
-    def _apply(self, fn):
-        """Handles CPU/GPU transfer and type conversion."""
-        super()._apply(fn)
-        self.u_equilibrium = fn(self.u_equilibrium)
-        if not self.trainable:
-            self.K = fn(self.K)
-        return self
+    # TODO: Test out these changes, but it may not be necessary to define these _apply methods
+    # def _apply(self, fn):
+    #     """Handles CPU/GPU transfer and type conversion."""
+    #     super()._apply(fn)
+    #     self.u_equilibrium = fn(self.u_equilibrium)
+    #     if not self.trainable:
+    #         self.K = fn(self.K)
+    #     return self
 
 
 class NeuralNetworkController(nn.Module):
     def __init__(
         self,
-        nlayer=3,
-        in_dim=2,
-        out_dim=1,
-        hidden_dim=64,
+        nlayer: int=3,
+        in_dim: int=2,
+        out_dim: int=1,
+        hidden_dim: int=64,
         clip_output=None,
-        u_lo=None,
-        u_up=None,
-        x_equilibrium=None,
-        u_equilibrium=None,
+        u_lo: Optional[Union[float, Tensor]]=None,
+        u_up: Optional[Union[float, Tensor]]=None,
+        x_equilibrium: Optional[Union[float, Tensor]]=None,
+        u_equilibrium: Optional[Union[float, Tensor]]=None,
         activation=nn.ReLU,
         *args,
         **kwargs
@@ -70,38 +80,55 @@ class NeuralNetworkController(nn.Module):
         [u_lo, u_up] and at equilibrium state x_equilibrium, the control action
         is the equilibrium action u_equilibrium
         """
+
+        # Initialize and configure all of the parameters passed by the user
         super().__init__(*args, **kwargs)
         assert clip_output in (None, "tanh", "clamp")
         self.clip_output = clip_output
         if u_lo is not None:
             assert u_lo.shape == (out_dim,)
-        self.u_lo = u_lo
+            self.register_buffer("u_lo", u_lo)
+            # self.u_lo = u_lo
+        else:
+            self.u_lo = None
         if u_up is not None:
             assert u_up.shape == (out_dim,)
-        self.u_up = u_up
+            self.register_buffer("u_up", u_up)
+            # self.u_up = u_up
+        else:
+            self.u_up = None
         if x_equilibrium is not None:
             assert x_equilibrium.shape == (in_dim,)
-        self.x_equilibrium = x_equilibrium
+            self.register_buffer('x_equilibrium', x_equilibrium.clone().detach())
+            # self.x_equilibrium = x_equilibrium
+        else:
+            self.x_equilibrium = None
         if u_equilibrium is not None:
             assert u_equilibrium.shape == (out_dim,)
             if self.u_lo is not None:
                 assert torch.all(u_equilibrium >= self.u_lo)
             if self.u_up is not None:
                 assert torch.all(u_equilibrium <= self.u_up)
-        self.u_equilibrium = u_equilibrium
+            self.register_buffer('u_equilibrium', u_equilibrium)
+            # self.u_equilibrium = u_equilibrium
+        else:
+            self.u_equilibrium = None
+
+        # initialize the layers of the network with a linear layer of appropriate dimension
         layers = [nn.Linear(in_dim, out_dim if nlayer == 1 else hidden_dim)]
+        # append the rest of the layers to the network
         for n in range(1, nlayer - 1):
             layers.append(activation())
             layers.append(nn.Linear(hidden_dim, hidden_dim))
         if nlayer != 1:
             layers.append(activation())
             layers.append(nn.Linear(hidden_dim, out_dim))
+        # Simple feedforward networks can be simplified as a nn.Sequential object. Save this
+        # to self.net so that the layers/network is now callable
         self.net = nn.Sequential(*layers)
-        self.layers = layers
-        # print(f'Controller function:')
-        # print(self.net)
+        self.layers = layers # save layers just in case
 
-    def _unclipped_output(self, x: torch.Tensor) -> torch.Tensor:
+    def _unclipped_output(self, x: Tensor) -> Tensor:
         unclipped_output = self.net(x)
         if self.x_equilibrium is not None and self.u_equilibrium is not None:
             unclipped_output = (
@@ -109,7 +136,7 @@ class NeuralNetworkController(nn.Module):
             )
         return unclipped_output
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         unclipped_output = self._unclipped_output(x)
 
         if self.clip_output is None:
@@ -137,16 +164,17 @@ class NeuralNetworkController(nn.Module):
                 f = -(torch.nn.functional.relu(self.u_up - f1) - self.u_up)
                 return f
 
-    def _apply(self, fn):
-        """Handles CPU/GPU transfer and type conversion."""
-        super()._apply(fn)
-        self.x_equilibrium = fn(self.x_equilibrium)
-        self.u_equilibrium = fn(self.u_equilibrium)
-        if self.u_lo is not None:
-            self.u_lo = fn(self.u_lo)
-        if self.u_up is not None:
-            self.u_up = fn(self.u_up)
-        return self
+    # TODO: Test out these changes, but it may not be necessary to define these _apply methods
+    # def _apply(self, fn):
+    #     """Handles CPU/GPU transfer and type conversion."""
+    #     super()._apply(fn)
+    #     self.x_equilibrium = fn(self.x_equilibrium)
+    #     self.u_equilibrium = fn(self.u_equilibrium)
+    #     if self.u_lo is not None:
+    #         self.u_lo = fn(self.u_lo)
+    #     if self.u_up is not None:
+    #         self.u_up = fn(self.u_up)
+    #     return self
 
 
 class NeuralNetworkLuenbergerObserver(nn.Module):
@@ -157,11 +185,12 @@ class NeuralNetworkLuenbergerObserver(nn.Module):
 
     def __init__(
         self,
-        z_dim,
-        y_dim,
+        z_dim: int,
+        y_dim: int,
         dynamics,
         h,
         zero_obs_error,
+        # fc_hidden_dim: List[int, ...]=[16, 16, 8, 8],
         fc_hidden_dim=[16, 16, 8, 8],
         activation=nn.LeakyReLU,
     ):

@@ -100,7 +100,7 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
           continuous_time_system: This system has to define a function
           qddot = f(x, u) where x = [q, qdot].
         """
-        super(SecondOrderDiscreteTimeSystem(QuadrotorDynamics), self).__init__(
+        super().__init__(
             continuous_time_system.nx, continuous_time_system.nu
         )
         assert callable(getattr(continuous_time_system, "forward"))
