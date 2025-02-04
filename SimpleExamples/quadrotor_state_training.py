@@ -363,7 +363,7 @@ def main(cfg: DictConfig):
 
 
 
-def linearize_sympy():
+def linearize_sympy(x, u, t_yaw):
     pos_x, pos_y, pos_z, psi, theta, phi = symbols('pos_x pos_y pos_z psi theta phi')
     vel_x, vel_y, vel_z = symbols('vel_x vel_y vel_z')
     psi_dot, phi_dot, theta_dot = symbols('psi_dot phi_dot theta_dot')
@@ -373,6 +373,16 @@ def linearize_sympy():
     J_x: float = 0.054,
     J_y: float = 0.054
     J_z: float = 0.104
+
+    # States (theta, thete_dot)
+    x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]    # positions
+    x4, x5, x6 = x[:, 3], x[:, 4], x[:, 5]    # velocities
+    x7, x8, x9 = x[:, 6], x[:, 7], x[:, 8]    # angles
+    x10, x11, x12 = x[:, 9], x[:, 10], x[:, 11]  # angular rates
+        
+    # Control inputs
+    u1, u2, u3 = u[:, 0], u[:, 1], u[:, 2]    # force/torque inputs
+
     # Translational dynamics (position derivatives)
     dx1 = cos(x8) * cos(x9) * x4 + (sin(x7) * sin(x8) * cos(x9) - cos(x7) * sin(x9)) * x5 + (cos(x7) * sin(x8) * cos(x9) + sin(x7) * sin(x9)) * x6
     dx2 = cos(x8) * sin(x9) * x4 + (sin(x7) * sin(x8) * sin(x9) + cos(x7) * cos(x9)) * x5 + (cos(x7) * sin(x8) * sin(x9) - sin(x7) * cos(x9)) * x6
@@ -423,5 +433,4 @@ def linearize_sympy():
     print(B)
 
 if __name__ == "__main__":
-    linearize_sympy()
     main()
