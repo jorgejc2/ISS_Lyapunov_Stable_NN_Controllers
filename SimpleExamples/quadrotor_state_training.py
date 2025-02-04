@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import quadrotor_dynamics
 from omegaconf import DictConfig, OmegaConf
-import scipy
+from sympy import symbols, cos, sin, tan, Matrix
 import torch
 import torch.nn as nn
 import wandb
@@ -19,19 +19,21 @@ import neural_lyapunov_training.train_utils as train_utils
 device = torch.device("cpu")
 dtype = torch.float
 
-def compute_lqr(quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics):
-    x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
-    u_equilibrium = quadrotor_tracking_continous.u_equilibrium.to(device)
-    A_batch, B_batch = quadrotor_tracking_continous.linearized_dynamics(
-        x_equilibrium.unsqueeze(0), u_equilibrium.unsqueeze(0)
-    )
-    A = A_batch.squeeze(0).cpu().detach().numpy()
-    B = B_batch.squeeze(0).cpu().detach().numpy()
-    Q = np.eye(2)
-    R = np.eye(1)
-    S = scipy.linalg.solve_continuous_are(A, B, Q, R)
-    K = -np.linalg.solve(R, B.T @ S)
-    return K, S
+to_numpy = lambda x : x.detach().cpu().numpy()
+
+# def compute_lqr(quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics):
+   # x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
+    # u_equilibrium = quadrotor_tracking_continous.u_equilibrium.to(device)
+    # A_batch, B_batch = quadrotor_tracking_continous.linearized_dynamics(
+    #    x_equilibrium.unsqueeze(0), u_equilibrium.unsqueeze(0)
+    #)
+    #A = A_batch.squeeze(0).cpu().detach().numpy()
+    #B = B_batch.squeeze(0).cpu().detach().numpy()
+    #Q = np.eye(quadrotor_tracking_continous.nx)
+    #R = np.eye(quadrotor_tracking_continous.nu)
+    #S = scipy.linalg.solve_continuous_are(A, B, Q, R)
+    #K = -np.linalg.solve(R, B.T @ S)
+    #return K, S
 
 def approximate_lqr(
     quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics,
@@ -112,21 +114,21 @@ def main(cfg: DictConfig):
 
     absolute_output = True
     if cfg.model.lyapunov.quadratic:
-        _, S = compute_lqr(quadrotor_tracking_continous)
-        S_torch = torch.from_numpy(S).type(dtype).to(device)
-        R = torch.linalg.cholesky(S_torch)
+        # _, S = compute_lqr(quadrotor_tracking_continous)
+        # S_torch = torch.from_numpy(S).type(dtype).to(device)
+        # R = torch.linalg.cholesky(S_torch)
         lyapunov_nn = lyapunov.NeuralNetworkQuadraticLyapunov(
-            goal_state=torch.zeros(2, dtype=dtype).to(device),
-            x_dim=2,
-            R_rows=2,
+            goal_state=torch.zeros(quadrotor_tracking_continous.nx, dtype=dtype).to(device),
+            x_dim=quadrotor_tracking_continous.nx,
+            R_rows=quadrotor_tracking_continous.nx,
             eps=0.01,
-            R=R,
+            # R=R,
         )
     else:
         lyapunov_nn = lyapunov.NeuralNetworkLyapunov(
             goal_state=quadrotor_tracking_continous.x_equilibrium,
             hidden_widths=cfg.model.lyapunov.hidden_widths,
-            x_dim=2,
+            x_dim=12,
             R_rows=3,
             absolute_output=absolute_output,
             eps=0.01,
@@ -150,16 +152,16 @@ def main(cfg: DictConfig):
     dynamics.to(device)
     controller.to(device)
     lyapunov_nn.to(device)
-    grid_size = torch.tensor([50, 50], device=device)
+    grid_size = torch.tensor([50]*(quadrotor_tracking_continous.nx), device=device)
     logger = logging.getLogger(__name__)
-    if cfg.approximate_lqr:
-        approximate_lqr(
-            quadrotor_tracking_continous, controller, lyapunov_nn, upper_limit, logger
-        )
-        torch.save(
-            {"state_dict": derivative_lyaloss.state_dict()},
-            os.path.join(os.getcwd(), "lyaloss_lqr.pth"),
-        )
+    # if cfg.approximate_lqr:
+    #     approximate_lqr(
+    #         quadrotor_tracking_continous, controller, lyapunov_nn, upper_limit, logger
+    #     )
+    #     torch.save(
+    #         {"state_dict": derivative_lyaloss.state_dict()},
+    #         os.path.join(os.getcwd(), "lyaloss_lqr.pth"),
+    #     )
 
     if cfg.model.load_lyaloss is not None:
         load_lyaloss = os.path.join(
@@ -171,7 +173,7 @@ def main(cfg: DictConfig):
         positivity_lyaloss = None
     else:
         positivity_lyaloss = lyapunov.LyapunovPositivityLoss(
-            lyapunov_nn, 0.01 * torch.eye(2, device=device)
+            lyapunov_nn, 0.01 * torch.eye(quadrotor_tracking_continous.nx, device=device)
         )
 
     if cfg.train.wandb.enabled:
@@ -360,5 +362,51 @@ def main(cfg: DictConfig):
     plt.savefig(os.path.join(os.getcwd(), "V_roa.png"))
 
 
+
+def linearize_sympy():
+    pos_x, pos_y, pos_z, psi, theta, phi = symbols('pos_x pos_y pos_z psi theta phi')
+    vel_x, vel_y, vel_z = symbols('vel_x vel_y vel_z')
+    psi_dot, phi_dot, theta_dot = symbols('psi_dot phi_dot theta_dot')
+    m, g, Jx, Jy, Jz = symbols('m g Jx Jy Jz')
+    fx, fy, fz = symbols('fx fy fz')
+    taux, tauy, tauz = symbols('taux tauy tauz')
+
+    # Define dynamics vector
+    dynamics_vector = Matrix([
+        # Position derivatives (world frame velocities)
+        vel_x * cos(psi) * cos(theta) + vel_y * (sin(phi) * sin(theta) * cos(psi) - cos(phi) * sin(psi)) + vel_z * (cos(phi) * sin(theta) * cos(psi) + sin(phi) * sin(psi)),
+        vel_x * sin(psi) * cos(theta) + vel_y * (sin(phi) * sin(theta) * sin(psi) + cos(phi) * cos(psi)) + vel_z * (cos(phi) * sin(theta) * sin(psi) - sin(phi) * cos(psi)),
+       -vel_x * sin(theta) + vel_y * sin(phi) * cos(theta) + vel_z * cos(phi) * cos(theta),
+
+        # Angular rate transformations
+        phi_dot + psi_dot * cos(phi) * tan(theta) + theta_dot * sin(phi) * tan(theta),
+        phi_dot * cos(phi) - theta_dot * sin(phi),
+        psi_dot / cos(theta) + theta_dot * sin(phi) / cos(theta),
+
+        # Linear accelerations (body frame)
+        (g * m * sin(theta) - m * phi_dot * vel_z + m * theta_dot * vel_y) / m,
+        (-g * m * sin(phi) * cos(theta) + m * psi_dot * vel_z - m * theta_dot * vel_x) / m,
+        (fz - g * m * cos(phi) * cos(theta) + m * phi_dot * vel_x - m * psi_dot * vel_y) / m,
+
+        # Angular accelerations
+        (Jy * phi_dot * theta_dot - Jz * phi_dot * theta_dot + taux) / Jx,
+        (-Jx * psi_dot * theta_dot + Jz * psi_dot * theta_dot + tauy) / Jy,
+        (Jx * phi_dot * psi_dot - Jy * phi_dot * psi_dot + tauz) / Jz
+    ])
+
+    # Define variables with respect to which to compute Jacobian
+    variables_A = [pos_x, pos_y, pos_z, psi, theta, phi, vel_x, vel_y, vel_z, psi_dot, phi_dot, theta_dot]
+    variables_B = [taux, tauy, tauz, fz]
+
+    # Compute Jacobian matrices
+    A = dynamics_vector.jacobian(variables_A)
+    B = dynamics_vector.jacobian(variables_B)
+
+    print("A =")
+    print(A)
+    print("\nB =")
+    print(B)
+
 if __name__ == "__main__":
+    linearize_sympy()
     main()

@@ -180,8 +180,8 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         super().__init__(continuous_system, **kwargs) #fix dt later
         pre_mask = np.zeros(12)
         pre_mask[3:6] = 1
-        self._a_mask = np.argwhere(pre_mask == 1)[0].tolist()  # angular mask
-        self._r_mask = np.argwhere(pre_mask == 1)[0].tolist()  # rest mask
+        self._a_mask = np.argwhere(pre_mask == 1).flatten().tolist()  # angular mask
+        self._r_mask = np.argwhere(pre_mask == 1).flatten().tolist()  # rest mask
         
     """
     q = [position_x, position_y, position_z, roll, pitch, yaw]
@@ -230,8 +230,15 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         a_mask = self._a_mask
         r_mask = self._r_mask
         quat = x[:, a_mask]  # Angles (orientation)
-        qddot = self.continuous_time_system.forard(x, u)
+        qddot = self.continuous_time_system.forward(x, u)
         angular_vel = qddot[:, a_mask]
+
+        print(f"angular_vel size {angular_vel.size()}")
+        print(f"a_mask: {a_mask}")
+        print(f"r_mask: {r_mask}")
+        print(f"quat size: {quat.size()}")
+        print(f"quat: {quat}")
+
         new_quat = QuadrotorDynamics.integrateQ(quat, angular_vel, self.dt)
         x_upper = x[:, self.nq:]  # current velocities
         x_lower = x[:, :self.nq]  # current positions

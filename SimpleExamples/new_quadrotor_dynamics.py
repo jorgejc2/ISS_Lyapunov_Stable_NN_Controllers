@@ -178,8 +178,10 @@ class QuadrotorDynamics:
         next_quat = quat.clone()
         omega_norm = torch.linalg.norm(omega, dim=1)
         p, q, r = omega[:, 0], omega[:, 1], omega[:, 2]  # unpack angular rates
+
         # mask to only update batches whose quaternion rates are not significantly small
         update_mask = torch.logical_not(torch.isclose(omega_norm, torch.zeros_like(omega_norm)))
+
         num_update = update_mask.sum().item()
         if num_update == 0:
             # no batches to update
@@ -192,6 +194,8 @@ class QuadrotorDynamics:
         r = r[update_mask]
         omega_norm = omega_norm[update_mask]
 
+        
+
         # put angles into skew matrix form (so that we can do matrix multiplication instead of cross multiplication)
         batch_zeros = torch.zeros_like(r)
         lambda_ = torch.stack([
@@ -200,15 +204,20 @@ class QuadrotorDynamics:
             torch.stack([q, -p, batch_zeros, r], dim=1),
             torch.stack([-p, -q, -r, batch_zeros], dim=1)
         ], dim=1) * 0.5  # shape (batch, 4, 4)
+        print(f"Shape of lambda: {lambda_.shape}")
         theta = omega_norm * time_step / 2
         # Intermediate calculation for calculating the next quaternion; Reshaping Tensors is another way to add singleton
         # dimensions while also explicitly listing the shapes. Singleton dimensions allow for broadcasting, i.e. the
         # torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) term produces a Tensor that has shape
         # (num_update, 4, 4) where each 4x4 identity matrix is multiplied by its corresponding cos(theta) scalar value.
         inter_quat = torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) + (2*torch.sin(theta)/omega_norm).reshape(num_update,1,1)*lambda_
-        # Formalize the next quaternion for the values that should be updated
-        next_quat[update_mask, :] = torch.einsum('bmn,bn->bn', inter_quat, quat)
-        return next_quat
+        return torch.cross(inter_quat, quat);
+        # # Formalize the next quaternion for the values that should be updated
+        # print("inter_quat size", inter_quat.size())
+        # print("quat size", quat.size())
+        # next_quat[update_mask, :] = torch.einsum('bmn,bn->bn', inter_quat, quat)
+        
+        #return next_quat
 
     ## properties ##
     @property

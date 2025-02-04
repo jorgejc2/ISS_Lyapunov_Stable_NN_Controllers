@@ -24,7 +24,7 @@ model:
   limit_scale: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
   V_psd_form: "L1"
   rho_multiplier: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.5, 1.5, 1.5, 1.5]
-  limit: [3, 3, 3, 3]
+  limit: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
   integration: "ExplicitEuler"
   dt: 0.05
 

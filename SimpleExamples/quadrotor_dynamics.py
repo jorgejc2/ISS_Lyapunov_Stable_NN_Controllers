@@ -14,7 +14,7 @@ class QuadrotorDynamics:
         self.J_y = J_y
         self.J_z = J_z
         self.t_yaw = t_yaw
-
+        self.m = m
         self.g = g  # Gravity
 
     def forward(self, x, u):
@@ -48,7 +48,7 @@ class QuadrotorDynamics:
         # Angular accelerations
         dx10 = (self.J_y - self.J_z) / self.J_x * x11 * x12 + u2 / self.J_x
         dx11 = (self.J_z - self.J_x) / self.J_y * x10 * x12 + u3 / self.J_y
-        dx12 = (self.J_x - self.J_y) / self.J_z * x10 * x11 + (1/self.J_z)*self.t_yaw;
+        dx12 = (self.J_x - self.J_y) / self.J_z * x10 * x11 + (1/self.J_z)*self.t_yaw
 
         # Concatenate dynamics
         dx = torch.stack([dx1, dx2, dx3, dx4, dx5, dx6, dx7, dx8, dx9, dx10, dx11, dx12], dim=1)

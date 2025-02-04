@@ -1324,7 +1324,10 @@ class BaseAviary(gym.Env):
             [-p, -q, -r, 0]
         ]) * .5
         theta = omega_norm * dt / 2
-        quat = np.dot(np.eye(4) * np.cos(theta) + 2 / omega_norm * lambda_ * np.sin(theta), quat)
+        print(f"Shape of quat is: {quat.shape}")
+        inter_quat = np.eye(4) * np.cos(theta) + 2 / omega_norm * lambda_ * np.sin(theta)
+        print(f"Shape of inter_quat is {inter_quat.shape}")
+        quat = np.dot(inter_quat, quat)
         return quat
 
     ################################################################################
