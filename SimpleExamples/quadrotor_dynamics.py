@@ -13,7 +13,7 @@ class QuadrotorDynamics:
         self.J_x = J_x
         self.J_y = J_y
         self.J_z = J_z
-        self.t_yaw = t_yaw;
+        self.t_yaw = t_yaw
 
         self.g = g  # Gravity
 
@@ -75,7 +75,6 @@ class QuadrotorDynamics:
         A[:, 6, 9] = 1   # d(theta)/d(omega_x)
         A[:, 7, 10] = 1  # d(phi)/d(omega_y)
         A[:, 8, 11] = 1  # d(psi)/d(omega_z)
-
        
         B[:, 5, 0] = -1 / self.m  # Effect of thrust on vertical acceleration
         B[:, 9, 1] = 1 / self.J_x  # Control effect of u2 (roll torque) on omega_x
@@ -92,8 +91,8 @@ class QuadrotorDynamics:
 
     @property
     def x_equilibrium(self):
-        return torch.zeros((2,))
+        return torch.zeros((self.nx,))
 
     @property
     def u_equilibrium(self):
-        return torch.zeros((1,))
+        return torch.zeros((self.nu,))

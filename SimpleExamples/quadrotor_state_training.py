@@ -99,12 +99,12 @@ def main(cfg: DictConfig):
    
     controller = controllers.NeuralNetworkController(
         nlayer=4,
-        in_dim=2,
-        out_dim=1,
+        in_dim=quadrotor_tracking_continous.nx,
+        out_dim=quadrotor_tracking_continous.nu,
         hidden_dim=8,
         clip_output="clamp",
-        u_lo=torch.tensor([-0.84]),
-        u_up=torch.tensor([0.84]),
+        u_lo=torch.tensor([-0.84]*3),
+        u_up=torch.tensor([0.84]*3),
         x_equilibrium=quadrotor_tracking_continous.x_equilibrium,
         u_equilibrium=quadrotor_tracking_continous.u_equilibrium,
     )
