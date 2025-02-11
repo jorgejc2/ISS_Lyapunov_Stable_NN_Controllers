@@ -181,7 +181,7 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         pre_mask = np.zeros(12)
         pre_mask[3:6] = 1
         self._a_mask = np.argwhere(pre_mask == 1).flatten().tolist()  # angular mask
-        self._r_mask = np.argwhere(pre_mask == 1).flatten().tolist()  # rest mask
+        self._r_mask = np.argwhere(pre_mask == 0).flatten().tolist()  # rest mask
         
     """
     q = [position_x, position_y, position_z, roll, pitch, yaw]
@@ -229,7 +229,7 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
 
         a_mask = self._a_mask
         r_mask = self._r_mask
-        quat = x[:, a_mask]  # Angles (orientation)
+        quat = x[:, a_mask]  # Angles (orientation or quaternion)
         qddot = self.continuous_time_system.forward(x, u)
         angular_vel = qddot[:, a_mask]
 

@@ -33,8 +33,10 @@ from gym_pybullet_drones.utils.Logger import Logger
 from gym_pybullet_drones.utils.utils import sync, str2bool
 
 DEFAULT_DRONES = DroneModel("cf2x")
+# DEFAULT_DRONES = DroneModel("cf2p")
 DEFAULT_NUM_DRONES = 3
 DEFAULT_PHYSICS = Physics("pyb")
+# DEFAULT_PHYSICS = Physics("dyn")
 DEFAULT_GUI = True
 DEFAULT_RECORD_VISION = False
 DEFAULT_PLOT = True

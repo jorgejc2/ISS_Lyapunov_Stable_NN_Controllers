@@ -1270,6 +1270,7 @@ class BaseAviary(gym.Env):
         #### Current state #########################################
         pos = self.pos[nth_drone,:]
         quat = self.quat[nth_drone,:]
+        print(f"quat shape: {quat.shape}")
         vel = self.vel[nth_drone,:]
         rpy_rates = self.rpy_rates[nth_drone,:]
         rotation = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
@@ -1324,9 +1325,8 @@ class BaseAviary(gym.Env):
             [-p, -q, -r, 0]
         ]) * .5
         theta = omega_norm * dt / 2
-        print(f"Shape of quat is: {quat.shape}")
         inter_quat = np.eye(4) * np.cos(theta) + 2 / omega_norm * lambda_ * np.sin(theta)
-        print(f"Shape of inter_quat is {inter_quat.shape}")
+        # print(f"inter_quat shape: {inter_quat.shape} | quat shape: {quat.shape}")
         quat = np.dot(inter_quat, quat)
         return quat
 

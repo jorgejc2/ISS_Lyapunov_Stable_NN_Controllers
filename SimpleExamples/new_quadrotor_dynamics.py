@@ -75,6 +75,8 @@ class QuadrotorDynamics:
         rpm_motor_1, rpm_motor_2, rpm_motor_3, rpm_motor_4 = (
             u[:, 0], u[:, 1], u[:, 2], u[:, 3])
 
+        # We convert the angular speed of each motor into its vertical force. The equation for this is:
+        # Fᵢ = kf ωᵢ²
         forces = (u**2) * self.kf # shape (batch, nu)
         thrust = torch.zeros(batch, 3)
         thrust[:, 2] = forces.sum(1)
@@ -90,6 +92,8 @@ class QuadrotorDynamics:
 
         # Angular Dynamics
         ang_vels = torch.stack((ang_vel_x, ang_vel_y, ang_vel_z), dim=1) # shape(batch, 3)
+        # The torque or moment about the z-axis uses different constants where we now use the formula:
+        # Fᵢ = km ωᵢ²
         z_torque = (u**2) * self.km
         x_torque = (forces[:, 1] - forces[:, 3]) * self.arm_length
         y_torque = (-forces[:,0] + forces[:, 2]) * self.arm_length
@@ -194,8 +198,6 @@ class QuadrotorDynamics:
         r = r[update_mask]
         omega_norm = omega_norm[update_mask]
 
-        
-
         # put angles into skew matrix form (so that we can do matrix multiplication instead of cross multiplication)
         batch_zeros = torch.zeros_like(r)
         lambda_ = torch.stack([
@@ -211,13 +213,42 @@ class QuadrotorDynamics:
         # torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) term produces a Tensor that has shape
         # (num_update, 4, 4) where each 4x4 identity matrix is multiplied by its corresponding cos(theta) scalar value.
         inter_quat = torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) + (2*torch.sin(theta)/omega_norm).reshape(num_update,1,1)*lambda_
-        return torch.cross(inter_quat, quat);
+        return torch.cross(inter_quat, quat)
         # # Formalize the next quaternion for the values that should be updated
         # print("inter_quat size", inter_quat.size())
         # print("quat size", quat.size())
         # next_quat[update_mask, :] = torch.einsum('bmn,bn->bn', inter_quat, quat)
         
         #return next_quat
+
+    def quaternion_to_rotation_matrix(self, quat: Tensor) -> Tensor:
+        """
+
+        :param quat:
+        :return:
+        """
+        # unpack the quaternion values
+        w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+
+        # Calculates the individual elements of the rotation matrix from the quaternion values
+        a = 1 - 2*(y**2 +z**2)
+        b = 2*(x*y - w*z)
+        c = 2*(x*z + w*y)
+        d = 2*(x*y + w*z)
+        e = 1 - 2*(x**2 + z**2)
+        f = 2*(y*z - w*x)
+        g = 2*(x*z - w*y)
+        h = 2*(y*z + w*x)
+        i = 1 - 2*(x**2 + y**2)
+
+        # Fills in the rotation matrix using the calculations from above
+        rotation_matrix = torch.stack([
+            torch.stack([a, b, c], dim=1),
+            torch.stack([d, e, f], dim=1),
+            torch.stack([g, h, i], dim=1)
+        ], dim=1)  # shape (batch, 3, 3)
+
+        return rotation_matrix
 
     ## properties ##
     @property
