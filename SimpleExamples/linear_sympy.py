@@ -2,8 +2,14 @@ from sympy import symbols, cos, sin, tan, Matrix
 
 # def linearize_sympy(x, u, t_yaw):
 # Define symbols
-x1, x2, x3, x4, x5, x6, x6, x7, x8, x9 = symbols('pos_x pos_y pos_z psi theta phi')
+x1, x2, x3, x4, x5, x6, x6, x7, x8, x9, x10, x11, x12 = symbols('x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12')
+u1, u2, u3 = symbols('u1 u2 u3')
+t_yaw = symbols('t_yaw')
+
 vel_x, vel_y, vel_z = symbols('vel_x vel_y vel_z')
+pos_x, pos_y, pos_z = symbols('pos_x pos_y pos_z')
+psi, phi, theta = symbols('psi phi theta')
+
 psi_dot, phi_dot, theta_dot = symbols('psi_dot phi_dot theta_dot')
 m, g, Jx, Jy, Jz = symbols('m g Jx Jy Jz')
 fx, fy, fz = symbols('fx fy fz')
@@ -15,13 +21,13 @@ J_y = 0.054
 J_z = 0.104
 
 # States (theta and theta_dot)
-x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]  # positions
-x4, x5, x6 = x[:, 3], x[:, 4], x[:, 5]  # velocities
-x7, x8, x9 = x[:, 6], x[:, 7], x[:, 8]  # angles
-x10, x11, x12 = x[:, 9], x[:, 10], x[:, 11]  # angular rates
+# x1, x2, x3  positions
+# x4, x5, x6  velocities
+# x7, x8, x9  angles
+# x10, x11, x12  angular rates
 
 # Control inputs
-u1, u2, u3 = u[:, 0], u[:, 1], u[:, 2]  # force/torque inputs
+# u1, u2, u3 force/torque inputs
 
 # Translational dynamics (position derivatives)
 dx1 = cos(x8) * cos(x9) * x4 + (sin(x7) * sin(x8) * cos(x9) - cos(x7) * sin(x9)) * x5 + (cos(x7) * sin(x8) * cos(x9) + sin(x7) * sin(x9)) * x6
@@ -67,9 +73,9 @@ variables_B = [taux, tauy, tauz, fz]
 A = dynamics_vector.jacobian(variables_A)
 B = dynamics_vector.jacobian(variables_B)
 
-print("A =")
+print("A = ")
 print(A)
-print("\nB =")
+print("\nB = ")
 print(B)
 
 # Example usage (uncomment and modify as needed):

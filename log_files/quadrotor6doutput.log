@@ -1,0 +1,41 @@
+python3 SimpleExamples/quadrotor_state_training.py > log.txt
+/Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/SimpleExamples/quadrotor_state_training.py:89: UserWarning: 
+The version_base parameter is not specified.
+Please specify a compatability version level, or None.
+Will assume defaults for version 1.1
+  @hydra.main(config_path="./config",
+/opt/anaconda3/envs/iss_lnc/lib/python3.11/site-packages/hydra/_internal/defaults_list.py:251: UserWarning: In 'quadrotor_state_training.yaml': Defaults list is missing `_self_`. See https://hydra.cc/docs/1.2/upgrades/1.0_to_1.1/default_composition_order for more information
+  warnings.warn(msg, UserWarning)
+/opt/anaconda3/envs/iss_lnc/lib/python3.11/site-packages/hydra/_internal/hydra.py:119: UserWarning: Future Hydra versions will no longer change working directory at job runtime by default.
+See https://hydra.cc/docs/1.2/upgrades/1.1_to_1.2/changes_to_job_working_dir/ for more information.
+  ret = run_job(
+Error executing job with overrides: []
+Traceback (most recent call last):
+  File "/Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/SimpleExamples/quadrotor_state_training.py", line 224, in main
+    train_utils.train_lyapunov_with_buffer(
+  File "/Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/neural_lyapunov_training/train_utils.py", line 966, in train_lyapunov_with_buffer
+    batch_train_lyapunov_ret = batch_train_lyapunov(
+                               ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/neural_lyapunov_training/train_utils.py", line 686, in batch_train_lyapunov
+    positivity_ibp_ret = compute_ibp_loss(
+                         ^^^^^^^^^^^^^^^^^
+  File "/Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/neural_lyapunov_training/train_utils.py", line 216, in compute_ibp_loss
+    grid_lower, grid_upper = generate_grids(lower_limit, upper_limit, grid_size)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/neural_lyapunov_training/train_utils.py", line 31, in generate_grids
+    lower = torch.cartesian_prod(*grids)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/iss_lnc/lib/python3.11/site-packages/torch/functional.py", line 1245, in cartesian_prod
+    return _VF.cartesian_prod(tensors)  # type: ignore[attr-defined]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: numel: integer multiplication overflow
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+/opt/anaconda3/envs/iss_lnc/lib/python3.11/tempfile.py:934: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/var/folders/z9/mp213lhn413gm34hx576x9pw0000gn/T/tmp0ncwch4vwandb'>
+  _warnings.warn(warn_message, ResourceWarning)
+/opt/anaconda3/envs/iss_lnc/lib/python3.11/tempfile.py:934: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/var/folders/z9/mp213lhn413gm34hx576x9pw0000gn/T/tmpw39zrzd6wandb-artifacts'>
+  _warnings.warn(warn_message, ResourceWarning)
+/opt/anaconda3/envs/iss_lnc/lib/python3.11/tempfile.py:934: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/var/folders/z9/mp213lhn413gm34hx576x9pw0000gn/T/tmpi9x_u6jgwandb-media'>
+  _warnings.warn(warn_message, ResourceWarning)
+/opt/anaconda3/envs/iss_lnc/lib/python3.11/tempfile.py:934: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/var/folders/z9/mp213lhn413gm34hx576x9pw0000gn/T/tmpt7kh5216wandb-media'>
+  _warnings.warn(warn_message, ResourceWarning)

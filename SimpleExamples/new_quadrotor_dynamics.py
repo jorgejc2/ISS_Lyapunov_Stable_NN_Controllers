@@ -142,14 +142,14 @@ class QuadrotorDynamics:
 
     ## static methods ##
     @staticmethod
-    def compute_rotation_matrix(quat: Tensor) -> Tensor:
+    def compute_rotation_matrix(euler: Tensor) -> Tensor:
         """
         Compute the rotation matrix from roll, pitch, and yaw angles.
         :param quat:    Tensor containing the roll, pitch, and yaw angles for all batches
         :return:        Rotation matrix using these angles to transform from body to world frame
         """
-        batch = quat.shape[0]
-        roll, pitch, yaw = quat[:, 0], quat[:, 1], quat[:, 2]  # unpack angles
+        batch = euler.shape[0]
+        roll, pitch, yaw = euler[:, 0], euler[:, 1], euler[:, 2]  # unpack angles
 
         # precompute trigonometric results
         c_roll, s_roll = torch.cos(roll), torch.sin(roll)
@@ -206,22 +206,16 @@ class QuadrotorDynamics:
             torch.stack([q, -p, batch_zeros, r], dim=1),
             torch.stack([-p, -q, -r, batch_zeros], dim=1)
         ], dim=1) * 0.5  # shape (batch, 4, 4)
-        print(f"Shape of lambda: {lambda_.shape}")
         theta = omega_norm * time_step / 2
         # Intermediate calculation for calculating the next quaternion; Reshaping Tensors is another way to add singleton
         # dimensions while also explicitly listing the shapes. Singleton dimensions allow for broadcasting, i.e. the
         # torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) term produces a Tensor that has shape
         # (num_update, 4, 4) where each 4x4 identity matrix is multiplied by its corresponding cos(theta) scalar value.
         inter_quat = torch.eye(4).reshape(1,4,4)*torch.cos(theta).reshape(num_update,1,1) + (2*torch.sin(theta)/omega_norm).reshape(num_update,1,1)*lambda_
-        return torch.cross(inter_quat, quat)
-        # # Formalize the next quaternion for the values that should be updated
-        # print("inter_quat size", inter_quat.size())
-        # print("quat size", quat.size())
-        # next_quat[update_mask, :] = torch.einsum('bmn,bn->bn', inter_quat, quat)
-        
-        #return next_quat
+        return torch.einsum('bmn, bn->bm', inter_quat, quat)
 
-    def quaternion_to_rotation_matrix(self, quat: Tensor) -> Tensor:
+    @staticmethod
+    def quaternion_to_rotation_matrix(quat: Tensor) -> Tensor:
         """
 
         :param quat:
@@ -249,7 +243,43 @@ class QuadrotorDynamics:
         ], dim=1)  # shape (batch, 3, 3)
 
         return rotation_matrix
+    
+    @staticmethod
+    def rotation_matrix_to_euler(R: Tensor)->Tensor:
+        """
+        Convert a 3x3 rotation matrix to Euler angles (roll, pitch, yaw).
+        Assumes XYZ rotation order.
 
+        Parameters:
+            R (numpy.ndarray): 3x3 rotation matrix.
+
+        Returns:
+            tuple: (roll, pitch, yaw) in radians.
+        """
+
+        pitch = torch.arcsin(-R[:, 2, 0])  # θ (Pitch)
+        
+        # if torch.abs(R[:, 2, 0]) != 1:  # Normal case (no gimbal lock)
+        roll = torch.arctan2(R[:, 2, 1], R[:, 2, 2])  # φ (Roll)
+        yaw = torch.arctan2(R[:, 1, 0], R[:, 0, 0])  # ψ (Yaw)
+        # else:  # Gimbal lock case
+        #     yaw = 0
+        #     roll = np.arctan2(-R[0, 1], R[1, 1])  # φ (Roll)
+        euler = torch.stack([roll, pitch, yaw], dim=1)
+        return euler
+
+    @staticmethod
+    def euler_to_quaternion(euler: Tensor) -> Tensor:
+        phi, theta, psi = euler[:, 0], euler[:, 1], euler[:, 2]  # roll, pitch, yaw
+        # print(f"phi: {phi.shape}, theta: {theta.shape}, psi: {psi.shape}")
+        w = torch.cos(phi / 2)*torch.cos(theta / 2)*torch.cos(psi/2) + torch.sin(phi/2)*torch.sin(theta/2)*torch.sin(psi/2)
+        x = torch.sin(phi / 2)*torch.cos(theta / 2)*torch.cos(psi/2) + torch.cos(phi/2)*torch.sin(theta/2)*torch.sin(psi/2)
+        y = torch.cos(phi / 2)*torch.sin(theta / 2)*torch.cos(psi/2) + torch.sin(phi/2)*torch.cos(theta/2)*torch.sin(psi/2)
+        z = torch.cos(phi / 2)*torch.cos(theta / 2)*torch.sin(psi/2) + torch.sin(phi/2)*torch.sin(theta/2)*torch.cos(psi/2)
+
+        quaternion = torch.stack([w, x, y, z], dim=1)
+        return quaternion
+    
     ## properties ##
     @property
     def x_equilibrium(self):

@@ -3,8 +3,7 @@ import torch.nn as nn
 from enum import Enum
 import numpy as np
 import control
-from new_quadrotor_dynamics import QuadrotorDynamics
-
+from SimpleExamples.new_quadrotor_dynamics import QuadrotorDynamics
 
 class DiscreteTimeSystem(nn.Module):
     """
@@ -141,7 +140,7 @@ class SecondOrderDiscreteTimeSystem(DiscreteTimeSystem):
         """
         Given the control gain K and observer gain L, solve the discrete-time Lyapunov equation
         for the closed-loop system with the states and controls at equilibrium.
-        The linearized dynamics are computed from the continuous-time system with Explicit Euler method.
+        The linearized dynamics are computed from the  continuous-time system with Explicit Euler method.
         """
         x0 = self.x_equilibrium.unsqueeze(0)
         Ad, Bd = self.continuous_time_system.linearized_dynamics(
@@ -181,8 +180,12 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         pre_mask = np.zeros(12)
         pre_mask[3:6] = 1
         self._a_mask = np.argwhere(pre_mask == 1).flatten().tolist()  # angular mask
-        self._r_mask = np.argwhere(pre_mask == 0).flatten().tolist()  # rest mask
-        
+        self._r_lower_mask = np.concatenate([
+            np.arange(0, 3)     # x,y,z positions
+        ]).tolist()
+        self._r_upper_mask = np.concatenate([
+            np.arange(6, 12)     # vx,vy,vz, rollpitchyaw positions
+        ]).tolist()
     """
     q = [position_x, position_y, position_z, roll, pitch, yaw]
     qdot = [velocity_x, velocity_y, velocity_z, roll rate, pitch rate, yaw rate]
@@ -228,27 +231,26 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         assert x.shape[0] == u.shape[0]
 
         a_mask = self._a_mask
-        r_mask = self._r_mask
-        quat = x[:, a_mask]  # Angles (orientation or quaternion)
+        r_upper_mask = self._r_upper_mask
+        r_lower_mask = self._r_lower_mask
+        euler = x[:, a_mask]  # Angles (orientation or quaternion)
         qddot = self.continuous_time_system.forward(x, u)
         angular_vel = qddot[:, a_mask]
-
-        print(f"angular_vel size {angular_vel.size()}")
-        print(f"a_mask: {a_mask}")
-        print(f"r_mask: {r_mask}")
-        print(f"quat size: {quat.size()}")
-        print(f"quat: {quat}")
-
+        quat = QuadrotorDynamics.euler_to_quaternion(euler)
         new_quat = QuadrotorDynamics.integrateQ(quat, angular_vel, self.dt)
         x_upper = x[:, self.nq:]  # current velocities
         x_lower = x[:, :self.nq]  # current positions
 
         q_next, qdot_next = torch.zeros_like(x[:, : self.nq]), torch.zeros_like(x[:, : self.nq])
-        q_next[:, a_mask] = new_quat
+        # gets the rotation matrix from the new quaternion
+        rotation_matrix = QuadrotorDynamics.quaternion_to_rotation_matrix(new_quat)
+        # from the new rotation matrix, get the new Euler angles
+        new_euler = QuadrotorDynamics.rotation_matrix_to_euler(rotation_matrix)
+        q_next[:, a_mask] = new_euler
 
         # update the velocities (qdot_next)
         if self.velocity_integration == IntegrationMethod.ExplicitEuler:
-            qdot_next = x_upper + qddot * self.dt
+            qdot_next = x_upper + qddot[:, :6] * self.dt
         else:
             raise NotImplementedError
         
@@ -260,15 +262,21 @@ class QuadrotorSystem(SecondOrderDiscreteTimeSystem):
         # else:
         #     raise NotImplementedError
         
-        # update the positions (q_next)
-        x_upper_rest = x_upper[:, r_mask]
-        x_lower_rest = x_lower[:, r_mask]
+        x_velocities = x_upper[:, :3]
+        
+       
+        x_positions = x_lower[:, :3]
+
+
+        self.position_integration = IntegrationMethod.MidPoint
         if self.position_integration == IntegrationMethod.MidPoint:
-            qdot_next_rest = qdot_next[:, r_mask]
-            q_next_rest = x_lower_rest + (qdot_next_rest + x_upper_rest) / 2 * self.dt
-            q_next[:, r_mask] = q_next_rest
+            # lower
+            qdot_next_rest = qdot_next[:, :3]
+            q_next_rest = x_velocities + (qdot_next_rest + x_positions) / 2 * self.dt
+            q_next[:, :3] = q_next_rest
         elif self.position_integration == IntegrationMethod.ExplicitEuler:
-            q_next_rest = x_lower_rest + x_upper_rest * self.dt
+            # upper
+            q_next_rest = x_velocities + x_positions * self.dt
             q_next[:, r_mask] = q_next_rest
         else:
             raise NotImplementedError
