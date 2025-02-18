@@ -167,9 +167,6 @@ def main(cfg: DictConfig):
         load_lyaloss = os.path.join(
             os.path.dirname(__file__), "../", cfg.model.load_lyaloss
         )
-        pth_dict = torch.load(load_lyaloss)
-        print(f"pth_dict: {pth_dict}")
-        print(f"pth_dict state_dict: {pth_dict['state_dict']}")
         derivative_lyaloss.load_state_dict(torch.load(load_lyaloss)["state_dict"])
 
     # if the output is not absolute, then we should incur loss wherever the Lyapunov function is negative as it
