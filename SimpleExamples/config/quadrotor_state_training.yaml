@@ -19,6 +19,7 @@ model:
     quadratic: True
     hidden_widths: [16, 16, 8]
   load_lyaloss: ${user.load_lyaloss}
+  # load_lyaloss: /Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/output/quadrotor_state_training/2025-02-17/19-27-20/lyaloss_0.1.pth
   kappa: 0.01
   V_decrease_within_roa: True
   limit_scale: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
@@ -29,7 +30,7 @@ model:
   dt: 0.05
 
 train:
-  train_lyaloss: True
+  train_lyaloss: True # set to False if we do not want to train
   Vmin_x_pgd_path: ${user.Vmin_x_pgd_path}
   hard_max: True
   num_samples_per_boundary: 1024

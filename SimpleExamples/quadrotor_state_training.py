@@ -167,6 +167,9 @@ def main(cfg: DictConfig):
         load_lyaloss = os.path.join(
             os.path.dirname(__file__), "../", cfg.model.load_lyaloss
         )
+        pth_dict = torch.load(load_lyaloss)
+        print(f"pth_dict: {pth_dict}")
+        print(f"pth_dict state_dict: {pth_dict['state_dict']}")
         derivative_lyaloss.load_state_dict(torch.load(load_lyaloss)["state_dict"])
 
     # if the output is not absolute, then we should incur loss wherever the Lyapunov function is negative as it
@@ -267,7 +270,6 @@ def main(cfg: DictConfig):
                 always_candidate_roa_regularizer=cfg.loss.always_candidate_roa_regularizer,
             )
 
-
         # save the final models
         torch.save(
             {
@@ -307,8 +309,9 @@ def main(cfg: DictConfig):
 
 
     pgd_verifier_find_counterexamples = False
-    counterexamples_check = torch.zeros((0, 2), device=device)
-    for seed in range(100):
+    counterexamples_check = torch.zeros((0, 12), device=device)
+    pgd_steps = 100
+    for seed in range(pgd_steps):
         train_utils.set_seed(seed)
 
         # If true, then we want to check that the Lyapunov derivative constraint is satisfied only within the rho
@@ -321,7 +324,7 @@ def main(cfg: DictConfig):
                 upper_limit,
                 num_samples_per_boundary=cfg.train.num_samples_per_boundary,
                 eps=limit,
-                steps=100,
+                steps=pgd_steps,
                 direction="minimize",
             )
             if derivative_lyaloss.x_boundary is not None:
@@ -332,8 +335,8 @@ def main(cfg: DictConfig):
         # randomly sample the input box
         x_check_start = (
             (
-                torch.rand((50000, 2), device=device)
-                - torch.full((2,), 0.5, device=device)
+                torch.rand((50000, 12), device=device)
+                - torch.full((12,), 0.5, device=device)
             )
             * limit
             * 2
@@ -374,7 +377,7 @@ def main(cfg: DictConfig):
 
     # Choose random points in the input box to visualize their trajectory. If the Lyapunov function can be verified,
     # then any points inside the rho level-set are guaranteed to converge to equilibrium.
-    x0 = (torch.rand((40, 2), device=device) - 0.5) * 2 * limit
+    x0 = (torch.rand((40, 12), device=device) - 0.5) * 2 * limit
     x_traj, V_traj = models.simulate(derivative_lyaloss, 500, x0)
     plt.plot(torch.stack(V_traj).cpu().detach().squeeze().numpy())
     plt.savefig(os.path.join(os.getcwd(), "Vtraj_roa.png"))
