@@ -69,4 +69,4 @@ loss:
     - [5.0, -7]
     - [6.0, -7]
     - [3., 6.]
-  always_candidate_roa_regulizer: False
+  always_candidate_roa_regularizer: False

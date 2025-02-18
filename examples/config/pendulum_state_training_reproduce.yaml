@@ -92,7 +92,7 @@ loss:
     - -7
   - - 3.0
     - 6.0
-  always_candidate_roa_regulizer: true
+  always_candidate_roa_regularizer: true
 wandb_name: pendulum
 approximate_lqr: false
 pgd_verifier_steps: 300

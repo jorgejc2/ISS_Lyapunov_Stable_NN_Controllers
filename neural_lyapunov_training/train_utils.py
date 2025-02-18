@@ -1,13 +1,13 @@
 from dataclasses import dataclass
 import itertools
-import typing
-from typing import Optional
+from typing import Optional, Union, Tuple, List
 import random
 import time
 from numpy.random import wald
 import logging
 
 import torch
+from torch import Tensor
 import numpy as np
 import wandb
 from auto_LiRPA import BoundedTensor, BoundedModule
@@ -34,8 +34,8 @@ def generate_grids(lower_limit, upper_limit, grid_size):
 
 
 def generate_grids_on_box_boundary(
-    lower_boundary: torch.Tensor, upper_boundary: torch.Tensor, grid_size: torch.Tensor
-) -> typing.Tuple[torch.Tensor, torch.Tensor]:
+    lower_boundary: Tensor, upper_boundary: Tensor, grid_size: Tensor
+) -> Tuple[Tensor, Tensor]:
     """
     Generate grids on the box boundary.
 
@@ -65,7 +65,7 @@ def generate_grids_on_box_boundary(
 
 
 def pgd_attack(
-    x0, f, eps, steps=10, lower_boundary=None, upper_boundary=None, direction="maximize"
+    x0: Tensor, f, eps: float, steps: int=10, lower_boundary=None, upper_boundary=None, direction: str="maximize"
 ):
     """
     Use adversarial attack (PGD) to find violating points.
@@ -77,7 +77,8 @@ def pgd_attack(
       lower_boundary: absolute lower bounds of x.
       upper_boundary: absolute upper bounds of x.
     """
-    # Set all parameters without gradient, this can speedup things significantly
+    # Set all parameters without gradient, this can speedup things significantly as we require their gradients
+    # for training but not for pgd attacks.
     grad_status = {}
     try:
         for p in f.parameters():
@@ -87,7 +88,7 @@ def pgd_attack(
         pass
 
     step_size = eps / steps * 2
-    noise = torch.randn_like(x0) * step_size
+    noise = torch.randn_like(x0) * step_size  # can be used to help points get unstuck at local minimas/maximas
     if lower_boundary is not None:
         lower_boundary = torch.max(lower_boundary, x0 - eps)
     else:
@@ -96,7 +97,10 @@ def pgd_attack(
         upper_boundary = torch.min(upper_boundary, x0 + eps)
     else:
         upper_boundary = x0 + eps
+
+    # create a new copy of the initial points that will soon be optimized w.r.t. these pgd attacks
     x = x0.detach().clone().requires_grad_()
+
     # Save the best x and best loss.
     best_x = torch.clone(x).detach().requires_grad_(False)
     fill_value = float("-inf") if direction == "maximize" else float("inf")
@@ -107,10 +111,14 @@ def pgd_attack(
         device=x.device,
         dtype=x.dtype,
     )
+
+    # run pgd attacks for the desired number of steps
     for i in range(steps):
-        output = f(x).squeeze(1)
+        output = f(x).squeeze(1)  # squeeze out singleton dimension
         # output = torch.clamp(f(x).squeeze(1), max=0)
-        output.mean().backward()
+        output.mean().backward()  # run a backward pass of the gradients
+
+        # record the best pgd loss acquired from these attacks
         if direction == "maximize":
             improved_mask = output >= best_loss
         else:
@@ -119,7 +127,10 @@ def pgd_attack(
         best_loss[improved_mask] = output[improved_mask]
         # print(f'step = {i}', output.view(-1).detach())
         # print(x.detach(), best_x)
-        noise = torch.randn_like(x0) * step_size / (i + 1)
+        noise = torch.randn_like(x0) * step_size / (i + 1) # can be used to help points get unstuck at local minimas/maximas
+
+        # Update x based on whether we are maximizing or minimizing the loss via pgd attacks. We use the clamp
+        # function to ensure that x is only contained in our desired
         if direction == "maximize":
             x = (
                 (
@@ -198,9 +209,9 @@ def compute_ibp_loss(
     bounded_lyapunov,
     bounded_state,
     ibp_ratio: float,
-    lower_limit: torch.Tensor,
-    upper_limit: torch.Tensor,
-    grid_size: torch.Tensor,
+    lower_limit: Tensor,
+    upper_limit: Tensor,
+    grid_size: Tensor,
 ) -> IbpLossReturn:
     device = lower_limit.device
     if ibp_ratio > 0 and bounded_lyapunov is not None:
@@ -222,14 +233,14 @@ def compute_ibp_loss(
 
 
 class SampleLossReturn:
-    def __init__(self, loss, unsatisfied, max_violation):
+    def __init__(self, loss: Tensor, unsatisfied: float, max_violation: float):
         self.loss = loss
         self.unsatisfied = unsatisfied
         self.max_violation = max_violation
 
 
 def compute_sample_loss(
-    lyaloss, x_samples: torch.Tensor, ratio: float
+    lyaloss, x_samples: Tensor, ratio: float
 ) -> SampleLossReturn:
     device = x_samples.device
     if ratio > 0 and lyaloss is not None:
@@ -254,7 +265,7 @@ class CleanLossReturn:
 
 
 def compute_clean_loss(
-    lyaloss, num_samples: int, limit: torch.Tensor, clean_ratio: float
+    lyaloss, num_samples: int, limit: Tensor, clean_ratio: float
 ) -> CleanLossReturn:
     device = limit.device
     x_dim = limit.numel()
@@ -284,13 +295,13 @@ def compute_adv_loss(
     lyaloss,
     adv_ratio: float,
     eps: float,
-    clean_x: torch.Tensor,
+    clean_x: Tensor,
     pgd_steps: int,
-    lower_limit: torch.Tensor,
-    upper_limit: torch.Tensor,
-    limit: torch.Tensor,
+    lower_limit: Tensor,
+    upper_limit: Tensor,
+    limit: Tensor,
     adv_l1_margin: float,
-    goal_state: torch.Tensor,
+    goal_state: Tensor,
 ) -> AdvLossReturn:
     """
     Args:
@@ -338,7 +349,7 @@ def print_progress(
     derivative_adv_ret: AdvLossReturn,
     positivity_adv_ret: AdvLossReturn,
     logger: logging.Logger,
-    elapsed_time: typing.Optional[float] = None,
+    elapsed_time: Optional[float] = None,
 ):
     # Check how large the Lyapunov function is. Make sure it is not converging to the trivial solution of 0.
     # Check how large the weights are, make sure they are not 0.
@@ -383,16 +394,16 @@ class BatchTrainLyapunovReturn:
 
 @dataclass
 class RoaRegulizerReturn:
-    loss: torch.Tensor
-    Vmin_boundary: typing.Optional[torch.Tensor]
-    Vmax_boundary: typing.Optional[torch.Tensor]
+    loss: Tensor
+    Vmin_boundary: Optional[Tensor]
+    Vmax_boundary: Optional[Tensor]
 
 
 def roa_regulizer(
     lyap: lyapunov.NeuralNetworkLyapunov,
-    Vmin_x_boundary: torch.Tensor,
+    Vmin_x_boundary: Tensor,
     Vmin_x_boundary_weight: float,
-    Vmax_x_boundary: torch.Tensor,
+    Vmax_x_boundary: Tensor,
     Vmax_x_boundary_weight: float,
 ) -> RoaRegulizerReturn:
     """
@@ -424,10 +435,10 @@ def roa_regulizer(
 
 def calc_candidate_roa_regulizer(
     lyap_nn: lyapunov.NeuralNetworkLyapunov,
-    rho: torch.Tensor,
-    x: typing.Optional[torch.Tensor],
+    rho: Tensor,
+    x: Optional[Tensor],
     weight: float,
-) -> torch.Tensor:
+) -> Tensor:
     """
     Compute weight * sum(max(V(x)/rho - 1, 0))
     """
@@ -450,13 +461,13 @@ def lipschitz_regularizer(f, x_samples):
 def update_x_boundary_dataset(
     Vmin_x_boundary_weight: float,
     V_decrease_within_roa: bool,
-    Vmin_x_boundary: torch.Tensor,
+    Vmin_x_boundary: Tensor,
     derivative_lyaloss: lyapunov.LyapunovDerivativeLoss,
-    lower_limit: torch.Tensor,
-    upper_limit: torch.Tensor,
+    lower_limit: Tensor,
+    upper_limit: Tensor,
     num_samples_per_boundary: int,
     Vmin_x_pgd_buffer_size: int,
-) -> torch.Tensor:
+) -> Tensor:
     if Vmin_x_boundary_weight != 0 or V_decrease_within_roa:
         limit = (upper_limit - lower_limit) / 2
         Vmin_x_boundary = torch.cat(
@@ -488,8 +499,8 @@ def update_x_boundary_dataset(
 
 
 def update_adv_dataset(
-    old_buffer: torch.Tensor, new_adv_x: torch.Tensor, loss, buffer_size: int
-) -> torch.Tensor:
+    old_buffer: Tensor, new_adv_x: Tensor, loss, buffer_size: int
+) -> Tensor:
     """
     The violation of a state x is -loss(x)
     We keep the state with the largest violation
@@ -508,16 +519,16 @@ def update_adv_dataset(
 
 def compute_loss_on_dataset(
     derivative_lyaloss: lyapunov.LyapunovDerivativeLoss,
-    positivity_lyaloss: typing.Optional[lyapunov.LyapunovPositivityLoss],
-    derivative_x_samples: torch.Tensor,
+    positivity_lyaloss: Optional[lyapunov.LyapunovPositivityLoss],
+    derivative_x_samples: Tensor,
     derivative_sample_ratio: float,
-    positivity_x_samples: torch.Tensor,
+    positivity_x_samples: Tensor,
     positivity_sample_ratio: float,
-    derivative_ibp_ret: typing.Optional[IbpLossReturn],
+    derivative_ibp_ret: Optional[IbpLossReturn],
     derivative_ibp_ratio: float,
-    positivity_ibp_ret: typing.Optional[IbpLossReturn],
+    positivity_ibp_ret: Optional[IbpLossReturn],
     positivity_ibp_ratio: float,
-) -> typing.Tuple[torch.Tensor, SampleLossReturn, typing.Optional[SampleLossReturn]]:
+) -> Tuple[Tensor, SampleLossReturn, Optional[SampleLossReturn]]:
     """
     Compute the Lyapunov loss (derivative and positivity loss) on the dataset.
     Note that this does NOT include the regularization loss or the observer loss.
@@ -544,13 +555,13 @@ def batch_train_lyapunov(
     derivative_lyaloss: lyapunov.LyapunovDerivativeLoss,
     positivity_lyaloss: lyapunov.LyapunovPositivityLoss,
     observer_loss: lyapunov.ObserverLoss,
-    lower_limit: torch.Tensor,
-    upper_limit: torch.Tensor,
-    grid_size: torch.Tensor,
+    lower_limit: Tensor,
+    upper_limit: Tensor,
+    grid_size: Tensor,
     ibp_eps: float,
-    derivative_x_samples: torch.Tensor,
-    positivity_x_samples: torch.Tensor,
-    observer_x_samples: torch.Tensor,
+    derivative_x_samples: Tensor,
+    positivity_x_samples: Tensor,
+    observer_x_samples: Tensor,
     batch_size: int,
     epochs: int,
     derivative_ibp_ratio: float,
@@ -562,12 +573,12 @@ def batch_train_lyapunov(
     l1_reg: float,
     observer_ratio: float,
     num_samples_per_boundary: int,
-    Vmin_x_boundary: torch.Tensor,
+    Vmin_x_boundary: Tensor,
     Vmin_x_boundary_weight: float,
     Vmin_x_pgd_buffer_size: int,
-    Vmax_x_boundary: torch.Tensor,
+    Vmax_x_boundary: Tensor,
     Vmax_x_boundary_weight: float,
-    candidate_roa_states: typing.Optional[torch.Tensor],
+    candidate_roa_states: Optional[Tensor],
     candidate_roa_states_weight: float,
     hard_max: bool,
     V_decrease_within_roa: bool,
@@ -576,7 +587,7 @@ def batch_train_lyapunov(
     lr_scheduler: bool,
     train_clf: bool,
     logger: logging.Logger,
-    always_candidate_roa_regulizer: bool,
+    always_candidate_roa_regularizer: bool,
 ) -> BatchTrainLyapunovReturn:
     """
     Minimize the Lyapunov function loss
@@ -590,12 +601,15 @@ def batch_train_lyapunov(
     usually positivity_x_samples has a small size.
 
     Args:
-      always_candidate_roa_regulizer: If set to True, then we always add the
+      always_candidate_roa_regularizer: If set to True, then we always add the
         candidate_roa_regulizer; otherwise we only impose this regularization
         when the Lyapuov condition violation is non-zero.
     """
+
+    # get only the parameters of the Lyapunov network so that we can update them
     params_dict = [{"params": list(derivative_lyaloss.lyapunov.parameters()), "lr": lr}]
     if not train_clf:
+        # if we also want to train the controller, we append its parameters as well
         params_dict.append(
             {
                 "params": list(derivative_lyaloss.controller.parameters()),
@@ -603,36 +617,41 @@ def batch_train_lyapunov(
             }
         )
     if observer_loss is not None:
+        # if we have an observer network, we should append those optimizable parameters as well
         params_dict.append(
             {
                 "params": list(derivative_lyaloss.observer.parameters()),
                 "lr": lr / 10,
             }
         )
+
+    # initialize the optimizer and learning rate scheduler
     params = []
     for dict in params_dict:
         params += dict["params"]
     optimizer = torch.optim.Adam(params_dict, weight_decay=weight_decay)
+    # Multistep LR means that the learning rate gets updated by a factor of gamma after every certain number of epochs
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer, milestones=[int(epochs * 0.3), int(epochs * 0.6)], gamma=0.5
     )
 
-    device = derivative_x_samples.device
+    device = derivative_x_samples.device  # gets the device to use
+    # turn the adversarial examples into a Torch convenient data set
     derivative_dataset = torch.utils.data.TensorDataset(derivative_x_samples)
     derivative_dataloader = torch.utils.data.DataLoader(
         derivative_dataset, batch_size=batch_size, shuffle=True
     )
     total_elements_lya = sum(
         p.numel() for p in derivative_lyaloss.lyapunov.parameters()
-    )
+    )  # total number of Lyapunov optimizable parameters
     if not train_clf:
         total_elements_con = sum(
             p.numel() for p in derivative_lyaloss.controller.parameters()
-        )
+        )  # total number of controller optimizable parameters
     if observer_loss is not None:
         total_elements_obs = sum(
             p.numel() for p in derivative_lyaloss.observer.parameters()
-        )
+        )  # total number of observer optimizable parameters
     if derivative_lyaloss.x_boundary is not None:
         logger.info(
             f"rho is {derivative_lyaloss.get_rho().item()}, dataset size={derivative_lyaloss.x_boundary.shape[0]}"
@@ -641,7 +660,7 @@ def batch_train_lyapunov(
     called_optimizer_step = False
     derivative_loss_init = compute_sample_loss(
         derivative_lyaloss, derivative_x_samples, derivative_sample_ratio
-    )
+    )  # get the initial loss before training has begun
 
     if derivative_ibp_ratio > 0:
         (
@@ -713,7 +732,7 @@ def batch_train_lyapunov(
                 )
 
             rho = derivative_lyaloss.get_rho()
-            if loss > 0 or always_candidate_roa_regulizer:
+            if loss > 0 or always_candidate_roa_regularizer:
                 candidate_roa_regulizer = calc_candidate_roa_regulizer(
                     derivative_lyaloss.lyapunov,
                     rho,
@@ -819,50 +838,50 @@ def batch_train_lyapunov(
 
 @dataclass
 class TrainLyapunovWithBufferReturn:
-    derivative_adv_samples: torch.Tensor
-    x_min_boundary: torch.Tensor
+    derivative_adv_samples: Tensor
+    x_min_boundary: Tensor
 
 
 def train_lyapunov_with_buffer(
     *,
     derivative_lyaloss: lyapunov.LyapunovDerivativeLoss,
-    positivity_lyaloss: typing.Optional[lyapunov.LyapunovPositivityLoss],
-    observer_loss: typing.Optional[lyapunov.ObserverLoss],
-    lower_limit: torch.Tensor,
-    upper_limit: torch.Tensor,
-    grid_size: torch.Tensor,
-    learning_rate=0.001,
-    lr_controller=0.001,
-    weight_decay=0.0,
-    max_iter=10000,
-    enable_wandb=False,
-    derivative_ibp_ratio=0.0,
-    derivative_sample_ratio=1.0,
-    positivity_ibp_ratio=0.0,
-    positivity_sample_ratio=1.0,
+    positivity_lyaloss: Optional[lyapunov.LyapunovPositivityLoss],
+    observer_loss: Optional[lyapunov.ObserverLoss],
+    lower_limit: Tensor,
+    upper_limit: Tensor,
+    grid_size: Tensor,
+    learning_rate: float=0.001,
+    lr_controller: float=0.001,
+    weight_decay: float=0.0,
+    max_iter: int=10000,
+    enable_wandb: bool=False,
+    derivative_ibp_ratio: float=0.0,
+    derivative_sample_ratio: float=1.0,
+    positivity_ibp_ratio: float=0.0,
+    positivity_sample_ratio: float=1.0,
     save_best_model=None,
-    pgd_steps=10,
-    buffer_size=1000,
-    batch_size=100,
-    epochs=20,
-    samples_per_iter=100,
-    l1_reg=1e-3,
-    observer_ratio=1e-3,
-    num_samples_per_boundary=1000,
+    pgd_steps: int=10,
+    buffer_size: int=1000,
+    batch_size: int=100,
+    epochs: int=20,
+    samples_per_iter: int=100,
+    l1_reg: float=1e-3,
+    observer_ratio: float=1e-3,
+    num_samples_per_boundary: int=1000,
     V_decrease_within_roa: bool = False,
-    Vmin_x_boundary_weight=0.0,
-    Vmax_x_boundary_weight=0.0,
-    candidate_roa_states: typing.Optional[torch.Tensor] = None,
+    Vmin_x_boundary_weight: float=0.0,
+    Vmax_x_boundary_weight: float=0.0,
+    candidate_roa_states: Optional[Tensor] = None,
     candidate_roa_states_weight: float = 0.0,
     hard_max: bool = True,
-    lr_scheduler=False,
-    Vmin_x_pgd_buffer_size=500000,
-    update_Vmin_boundary_per_epoch=False,
+    lr_scheduler: bool=False,
+    Vmin_x_pgd_buffer_size: int=500000,
+    update_Vmin_boundary_per_epoch: bool=False,
     derivative_x_buffer=None,
     Vmin_x_pgd=None,
     train_clf: bool = False,
     logger: logging.Logger = None,
-    always_candidate_roa_regulizer: bool = False,
+    always_candidate_roa_regularizer: bool = False,
 ) -> TrainLyapunovWithBufferReturn:
     """
     We train the Lyapunov and controller iteratively.
@@ -876,14 +895,14 @@ def train_lyapunov_with_buffer(
       batch_size: The size of the mini-batch in step 3.
       epochs: Number of epochs in step 3.
       samples_per_iter: Number of samples in the PGD attack in step 1.
-      always_candidate_roa_regulizer: If set to True, then we always add the
+      always_candidate_roa_regularizer: If set to True, then we always add the
         candidate_roa_regulizer; otherwise we only impose this regularization
         when the Lyapuov condition violation is non-zero.
     """
     limit = (upper_limit - lower_limit) / 2.0
-    nx = derivative_lyaloss.lyapunov.x_dim
-    device = lower_limit.device
-    dtype = lower_limit.dtype
+    nx = derivative_lyaloss.lyapunov.x_dim  # state dimension
+    device = lower_limit.device  # device to use
+    dtype = lower_limit.dtype  # data type to use
     if derivative_x_buffer is None:
         derivative_x_buffer = torch.empty((0, nx), device=device)
     best_loss = np.inf
@@ -897,8 +916,11 @@ def train_lyapunov_with_buffer(
     if logger is None:
         logger = logging.getLogger(__name__)
     for i in range(max_iter):
+        # number of epochs to train for
         logger.info(f"iter={i}")
 
+        # gets the minimum rho value from the Lyapunov function for only points that lie on the border of the input
+        # box via pgd attacks
         Vmin_x_pgd = update_x_boundary_dataset(
             Vmin_x_boundary_weight,
             V_decrease_within_roa,
@@ -912,6 +934,9 @@ def train_lyapunov_with_buffer(
 
         # First find the adversarial states through PGD attack.
 
+
+        # Randomly sample states, perform pgd attacks to find states violating the Lyapunov derivative constraint,
+        # and update the adversarial dataset based on states that are indeed counter-examples
         # TODO(hongkai.dai): figure out a better way to get the clean_x. Should
         # I start from the adversarial states in the previous iteration?
         clean_x = (
@@ -934,6 +959,9 @@ def train_lyapunov_with_buffer(
         derivative_x_buffer = update_adv_dataset(
             derivative_x_buffer, derivative_adv_x, derivative_lyaloss, buffer_size
         )
+
+        # If the output is not absolute, we should also find counter examples violating the Lyapunov PSD constraint
+        # using pgd attacks
         if positivity_lyaloss is not None:
             positivity_adv_x = pgd_attack(
                 clean_x,
@@ -999,7 +1027,7 @@ def train_lyapunov_with_buffer(
             lr_scheduler,
             train_clf,
             logger,
-            always_candidate_roa_regulizer,
+            always_candidate_roa_regularizer,
         )
         elapsed_time = time.time() - start_time
         logger.info(f"elapsed time = {elapsed_time}")
@@ -1041,7 +1069,7 @@ def train_lyapunov_with_buffer(
 
 
 def plot_adversarial_samples(ax, x_adv, x_max, e_max, file_name):
-    if isinstance(x_adv, torch.Tensor):
+    if isinstance(x_adv, Tensor):
         x_adv = x_adv.cpu().detach().numpy()
         x_max = x_max.cpu().detach().numpy()
         e_max = e_max.cpu().detach().numpy()
@@ -1070,13 +1098,13 @@ def set_seed(seed):
 
 def calc_V_extreme_on_boundary_pgd(
     lyap: lyapunov.NeuralNetworkLyapunov,
-    lower_boundary: torch.Tensor,
-    upper_boundary: torch.Tensor,
+    lower_boundary: Tensor,
+    upper_boundary: Tensor,
     num_samples_per_boundary: int,
     eps: float,
     steps: int,
     direction="maximize",
-) -> torch.Tensor:
+) -> Tensor:
     """
     Find max V(x) (or min V(x)) over x on the boundary of the box through PGD
     attack.
@@ -1147,10 +1175,10 @@ def calc_V_extreme_on_boundary_pgd(
 def get_candidate_roa_states(
     V: lyapunov.NeuralNetworkLyapunov,
     rho: float,
-    lower_limit: torch.Tensor,
-    upper_limit: torch.Tensor,
+    lower_limit: Tensor,
+    upper_limit: Tensor,
     box_scale: float,
-) -> torch.Tensor:
+) -> Tensor:
     """
     Move from box corners towards the sub-level set {x | V(x) <= rho}.
 
@@ -1176,7 +1204,7 @@ def get_candidate_roa_states(
                 self.V = V
                 self.rho = rho
 
-            def forward(self, x: torch.Tensor):
+            def forward(self, x: Tensor):
                 V_x = self.V(x)
                 return torch.maximum(
                     V_x - self.rho, torch.zeros_like(V_x, device=x.device)

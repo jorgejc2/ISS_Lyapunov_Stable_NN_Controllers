@@ -4,11 +4,12 @@ from typing import Optional, Union
 
 import torch.nn as nn
 import torch
+from torch import Tensor
 import neural_lyapunov_training.controllers as controllers
 import neural_lyapunov_training.dynamical_system as dynamical_system
 
 
-def soft_max(x: torch.Tensor, beta: float = 100):
+def soft_max(x: Tensor, beta: float = 100):
     x_max = torch.max(x, dim=-1, keepdim=True).values
     eq = torch.exp(beta * (x - x_max))
     if torch.any(torch.isnan(eq)):
@@ -17,7 +18,7 @@ def soft_max(x: torch.Tensor, beta: float = 100):
     return ret
 
 
-def logsumexp(x: torch.Tensor, beta: float = 100):
+def logsumexp(x: Tensor, beta: float = 100):
     x_max = torch.max(x, dim=-1, keepdim=True).values
     eq = torch.exp(beta * (x - x_max))
     if torch.any(torch.isnan(eq)):
@@ -25,7 +26,7 @@ def logsumexp(x: torch.Tensor, beta: float = 100):
     return torch.log(torch.sum(eq, dim=-1, keepdim=True)) / beta
 
 
-def soft_min(x: torch.Tensor, beta: float = 100):
+def soft_min(x: Tensor, beta: float = 100):
     return -soft_max(-x, beta)
 
 
@@ -46,14 +47,14 @@ class NeuralNetworkLyapunov(nn.Module):
 
     def __init__(
         self,
-        goal_state: torch.Tensor,
+        goal_state: Tensor,
         hidden_widths: list,
         x_dim: int,
         R_rows: int,
         absolute_output: bool,
         eps: float,
         activation: nn.Module,
-        nominal: typing.Optional[typing.Callable[[torch.Tensor], torch.Tensor]] = None,
+        nominal: Optional[typing.Callable[[Tensor], Tensor]] = None,
         V_psd_form: str = "L1",
         *args,
         **kwargs
@@ -120,7 +121,7 @@ class NeuralNetworkLyapunov(nn.Module):
             assert self.nominal(self.goal_state.unsqueeze(0))[0].item() == 0
         self.V_psd_form = V_psd_form
 
-    def _network_output(self, x: torch.Tensor) -> torch.Tensor:
+    def _network_output(self, x: Tensor) -> Tensor:
         if len(self.net) > 0:
             phi = self.net(x)
             phi_star = self.net(self.goal_state)
@@ -128,7 +129,7 @@ class NeuralNetworkLyapunov(nn.Module):
         else:
             return torch.zeros((x.shape[0], 1), device=x.device, dtype=x.dtype)
 
-    def _V_psd_output(self, x: torch.Tensor):
+    def _V_psd_output(self, x: Tensor):
         """
         Compute
         |(εI+RᵀR)(x-x*)|₁
@@ -198,11 +199,11 @@ class NeuralNetworkQuadraticLyapunov(nn.Module):
 
     def __init__(
         self,
-        goal_state: torch.Tensor,
+        goal_state: Tensor,
         x_dim: int,
         R_rows: int,
         eps: float,
-        R: typing.Optional[torch.Tensor] = None,
+        R: Optional[Tensor] = None,
         *args,
         **kwargs
     ):
@@ -283,13 +284,14 @@ class LyapunovPositivityLoss(nn.Module):
     """
 
     def __init__(
-        self, lyapunov: NeuralNetworkLyapunov, Nt: torch.Tensor, *args, **kwargs
+        self, lyapunov: NeuralNetworkLyapunov, Nt: Tensor, *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.lyapunov = lyapunov
-        assert isinstance(Nt, torch.Tensor)
+        assert isinstance(Nt, Tensor)
         assert Nt.shape[0] == self.lyapunov.x_dim
-        self.Nt = Nt
+        # creates 'self.Nt' which will be an optimizable parameter
+        self.register_parameter(name="Nt", param=torch.nn.Parameter(Nt.clone().detach()))
 
     def forward(self, x):
         Nx = (x - self.lyapunov.goal_state) @ self.Nt
@@ -299,12 +301,6 @@ class LyapunovPositivityLoss(nn.Module):
         )
         V = self.lyapunov(x)
         return V - l1_term
-
-    def _apply(self, fn):
-        """Handles CPU/GPU transfer and type conversion."""
-        super()._apply(fn)
-        self.Nt = fn(self.Nt)
-
 
 class LyapunovDerivativeSimpleLoss(nn.Module):
     """
@@ -388,13 +384,13 @@ class LyapunovDerivativeLoss(nn.Module):
         dynamics: dynamical_system.DiscreteTimeSystem,
         controller: controllers.NeuralNetworkController,
         lyap_nn: NeuralNetworkLyapunov,
-        box_lo: torch.Tensor,
-        box_up: torch.Tensor,
+        box_lo: Tensor,
+        box_up: Tensor,
         rho_multiplier: float,
         kappa: float = 0.1,
         beta: float = 100,
         hard_max: bool = True,
-        loss_weights: Optional[torch.Tensor] = None,
+        loss_weights: Optional[Tensor] = None,
         *args,
         **kwargs
     ):
@@ -413,7 +409,7 @@ class LyapunovDerivativeLoss(nn.Module):
         self.box_lo = box_lo
         self.box_up = box_up
         self.kappa = kappa
-        self.x_boundary: typing.Optional[torch.Tensor] = None
+        self.x_boundary: Optional[Tensor] = None
         self.beta = beta
         self.hard_max = hard_max
         if loss_weights is None:
@@ -428,7 +424,7 @@ class LyapunovDerivativeLoss(nn.Module):
         rho = self.rho_multiplier * rho_boundary
         return rho
 
-    def forward(self, x: torch.Tensor, save_new_x: bool = False):
+    def forward(self, x: Tensor, save_new_x: bool = False):
         # Run the system by one step with dt.
         u = self.controller(x)
         new_x = self.dynamics.forward(x, u)
@@ -498,13 +494,13 @@ class LyapunovDerivativeDOFLoss(nn.Module):
         observer,
         controller: controllers.NeuralNetworkController,
         lyap_nn: NeuralNetworkLyapunov,
-        box_lo: torch.Tensor,
-        box_up: torch.Tensor,
+        box_lo: Tensor,
+        box_up: Tensor,
         rho_multiplier: float,
         kappa=0.1,
         beta: float = 100,
         hard_max: bool = True,
-        loss_weights: Optional[torch.Tensor] = None,
+        loss_weights: Optional[Tensor] = None,
         *args,
         **kwargs
     ):
@@ -518,7 +514,7 @@ class LyapunovDerivativeDOFLoss(nn.Module):
         self.box_up = box_up
         self.kappa = kappa
         self.nx = dynamics.continuous_time_system.nx
-        self.x_boundary: typing.Optional[torch.Tensor] = None
+        self.x_boundary: Optional[Tensor] = None
         self.beta = beta
         self.hard_max = hard_max
         if loss_weights is None:
@@ -598,7 +594,7 @@ class LyapunovDerivativeDOFSimpleLoss(nn.Module):
         self.lyapunov = lyap_nn
         self.kappa = kappa
         self.nx = dynamics.continuous_time_system.nx
-        self.x_boundary: typing.Optional[torch.Tensor] = None
+        self.x_boundary: Optional[Tensor] = None
         self.beta = beta
         self.hard_max = hard_max
         self.fuse_dV = fuse_dV
@@ -685,7 +681,7 @@ class LyapunovContinuousTimeDerivativeLoss(nn.Module):
         self.kappa = kappa
         self.nx = continuous_time_system.nx
         self.nq = continuous_time_system.nq
-        self.x_boundary: typing.Optional[torch.Tensor] = None
+        self.x_boundary: Optional[Tensor] = None
         self.beta = beta
         self.hard_max = hard_max
 
@@ -754,7 +750,7 @@ class LyapunovContinuousTimeDerivativeDOFLoss(nn.Module):
         self.lyapunov = lyap_nn
         self.kappa = kappa
         self.nx = continuous_time_system.nx
-        self.x_boundary: typing.Optional[torch.Tensor] = None
+        self.x_boundary: Optional[Tensor] = None
         self.beta = beta
         self.hard_max = hard_max
 
@@ -800,7 +796,7 @@ class CLFDerivativeLoss(nn.Module):
         self,
         continuous_time_system,
         lyap_nn,
-        u_abs_box: torch.Tensor,
+        u_abs_box: Tensor,
         kappa=0.1,
         beta: float = 100,
         hard_max: bool = True,
@@ -814,7 +810,7 @@ class CLFDerivativeLoss(nn.Module):
         self.kappa = kappa
         self.nx = continuous_time_system.nx
         self.nq = continuous_time_system.nq
-        self.x_boundary: typing.Optional[torch.Tensor] = None
+        self.x_boundary: Optional[Tensor] = None
         self.beta = beta
         self.hard_max = hard_max
 
@@ -895,5 +891,5 @@ class LyapunovLowerBoundLoss:
         self.lyapunov = lyap
         self.rho_roa = rho_roa
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         return self.lyapunov(x) - self.rho_roa

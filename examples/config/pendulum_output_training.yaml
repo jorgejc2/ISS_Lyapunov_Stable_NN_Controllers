@@ -50,4 +50,4 @@ loss:
   candidate_roa_states_weight: [1e-4, 1e-4, 1e-5, 1e-5]
   l1_reg: [1e-4, 1e-4, 1e-5, 1e-5]
   observer_ratio: [1e-4, 1e-4, 1e-5, 1e-5]
-  always_candidate_roa_regulizer: True
+  always_candidate_roa_regularizer: True

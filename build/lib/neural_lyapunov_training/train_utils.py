@@ -575,7 +575,7 @@ def batch_train_lyapunov(
     lr_scheduler: bool,
     train_clf: bool,
     logger: logging.Logger,
-    always_candidate_roa_regulizer: bool,
+    always_candidate_roa_regularizer: bool,
 ) -> BatchTrainLyapunovReturn:
     """
     Minimize the Lyapunov function loss
@@ -589,7 +589,7 @@ def batch_train_lyapunov(
     usually positivity_x_samples has a small size.
 
     Args:
-      always_candidate_roa_regulizer: If set to True, then we always add the
+      always_candidate_roa_regularizer: If set to True, then we always add the
         candidate_roa_regulizer; otherwise we only impose this regularization
         when the Lyapuov condition violation is non-zero.
     """
@@ -712,7 +712,7 @@ def batch_train_lyapunov(
                 )
 
             rho = derivative_lyaloss.get_rho()
-            if loss > 0 or always_candidate_roa_regulizer:
+            if loss > 0 or always_candidate_roa_regularizer:
                 candidate_roa_regulizer = calc_candidate_roa_regulizer(
                     derivative_lyaloss.lyapunov,
                     rho,
@@ -861,7 +861,7 @@ def train_lyapunov_with_buffer(
     Vmin_x_pgd=None,
     train_clf: bool = False,
     logger: logging.Logger = None,
-    always_candidate_roa_regulizer: bool = False,
+    always_candidate_roa_regularizer: bool = False,
 ) -> TrainLyapunovWithBufferReturn:
     """
     We train the Lyapunov and controller iteratively.
@@ -875,7 +875,7 @@ def train_lyapunov_with_buffer(
       batch_size: The size of the mini-batch in step 3.
       epochs: Number of epochs in step 3.
       samples_per_iter: Number of samples in the PGD attack in step 1.
-      always_candidate_roa_regulizer: If set to True, then we always add the
+      always_candidate_roa_regularizer: If set to True, then we always add the
         candidate_roa_regulizer; otherwise we only impose this regularization
         when the Lyapuov condition violation is non-zero.
     """
@@ -998,7 +998,7 @@ def train_lyapunov_with_buffer(
             lr_scheduler,
             train_clf,
             logger,
-            always_candidate_roa_regulizer,
+            always_candidate_roa_regularizer,
         )
         elapsed_time = time.time() - start_time
         logger.info(f"elapsed time = {elapsed_time}")

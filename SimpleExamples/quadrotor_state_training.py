@@ -169,6 +169,8 @@ def main(cfg: DictConfig):
         )
         derivative_lyaloss.load_state_dict(torch.load(load_lyaloss)["state_dict"])
 
+    # if the output is not absolute, then we should incur loss wherever the Lyapunov function is negative as it
+    # it should be PSD
     if absolute_output:
         positivity_lyaloss = None
     else:
@@ -193,12 +195,19 @@ def main(cfg: DictConfig):
         derivative_x_buffer = None
 
     if cfg.train.train_lyaloss:
+        # start of Controller and Lyapunov network training
+
+        # we will iteratively increase the input box in order to train Lyapunov functions that verify larger level-sets
         for n in range(len(cfg.model.limit_scale)):
+
+            # get the input box for this iteration
             limit_scale = cfg.model.limit_scale[n]
             limit = limit_scale * torch.tensor(cfg.model.limit, device=device)
             lower_limit = -limit
             upper_limit = limit
 
+            # Constructs the Lyapunov derivative loss which ensures that states covered by the rho level-set
+            # indeed are Lyapunov stable
             derivative_lyaloss = lyapunov.LyapunovDerivativeLoss(
                 dynamics,
                 controller,
@@ -210,6 +219,7 @@ def main(cfg: DictConfig):
                 hard_max=cfg.train.hard_max,
             )
 
+            # saves the model parameters during each iteration
             if save_lyaloss:
                 save_lyaloss_path = os.path.join(
                     os.getcwd(), f"lyaloss_{limit_scale}.pth"
@@ -217,10 +227,13 @@ def main(cfg: DictConfig):
             else:
                 save_lyaloss_path = None
 
+            # construct a Tensor of states that we want to ensure are Lyapunov stable
             candidate_roa_states = limit_scale * torch.tensor(
                 cfg.loss.candidate_roa_states,
                 device=device,
             )
+
+            # start training the controller and Lyapunov function
             train_utils.train_lyapunov_with_buffer(
                 derivative_lyaloss=derivative_lyaloss,
                 positivity_lyaloss=positivity_lyaloss,
@@ -251,9 +264,11 @@ def main(cfg: DictConfig):
                 candidate_roa_states_weight=cfg.loss.candidate_roa_states_weight,
                 derivative_x_buffer=derivative_x_buffer,
                 logger=logger,
-                always_candidate_roa_regulizer=cfg.loss.always_candidate_roa_regulizer,
+                always_candidate_roa_regularizer=cfg.loss.always_candidate_roa_regularizer,
             )
 
+
+        # save the final models
         torch.save(
             {
                 "state_dict": lyapunov_nn.state_dict(),
@@ -262,6 +277,8 @@ def main(cfg: DictConfig):
             os.path.join(os.getcwd(), "lyapunov_nn.pth"),
         )
     else:
+        # we do not want to train any network but rather the maximum (or minimum) value of a previously trained
+        # Lyapunov network at inputs that lie on the border of the input box
         limit = cfg.model.limit_scale[-1] * torch.tensor(cfg.model.limit, device=device)
         lower_limit = -limit
         upper_limit = limit
@@ -275,6 +292,8 @@ def main(cfg: DictConfig):
             direction="minimize",
         )
 
+    # we now check for counter-examples to see if the Lyapunov derivative constraint is violated anywhere in the
+    # input box
     derivative_lyaloss_check = lyapunov.LyapunovDerivativeLoss(
         dynamics,
         controller,
@@ -285,10 +304,16 @@ def main(cfg: DictConfig):
         kappa=0.0,
         hard_max=True,
     )
+
+
     pgd_verifier_find_counterexamples = False
     counterexamples_check = torch.zeros((0, 2), device=device)
     for seed in range(100):
         train_utils.set_seed(seed)
+
+        # If true, then we want to check that the Lyapunov derivative constraint is satisfied only within the rho
+        # level-set of the Lyapunov function. Otherwise, we want to check that the constraint is satisfied at ALL
+        # points inside the input box
         if V_decrease_within_roa:
             x_min_boundary = train_utils.calc_V_extreme_on_boundary_pgd(
                 lyapunov_nn,
@@ -303,6 +328,8 @@ def main(cfg: DictConfig):
                 derivative_lyaloss_check.x_boundary = torch.cat(
                     (x_min_boundary, derivative_lyaloss.x_boundary), dim=0
                 )
+
+        # randomly sample the input box
         x_check_start = (
             (
                 torch.rand((50000, 2), device=device)
@@ -311,6 +338,8 @@ def main(cfg: DictConfig):
             * limit
             * 2
         )
+
+        # run pgd attacks to find and return counter examples
         adv_x = train_utils.pgd_attack(
             x_check_start,
             derivative_lyaloss_check,
@@ -320,6 +349,8 @@ def main(cfg: DictConfig):
             upper_boundary=upper_limit,
             direction="minimize",
         ).detach()
+
+        # if no counter-examples were found, then the loss 'adv_output' will be 0, otherwise it will be positive
         adv_lya = derivative_lyaloss_check(adv_x)
         adv_output = torch.clamp(-adv_lya, min=0.0)
         max_adv_violation = adv_output.max().item()
@@ -334,18 +365,21 @@ def main(cfg: DictConfig):
     logger.info(
         f"PGD verifier finds counter examples? {pgd_verifier_find_counterexamples}"
     )
+    # save the counter-examples in case we want to further evaluate these points
     if counterexamples_check.shape[0] > 0:
         torch.save(
             counterexamples_check,
             os.path.join(os.getcwd(), "counterexamples_check.pth"),
         )
 
+    # Choose random points in the input box to visualize their trajectory. If the Lyapunov function can be verified,
+    # then any points inside the rho level-set are guaranteed to converge to equilibrium.
     x0 = (torch.rand((40, 2), device=device) - 0.5) * 2 * limit
     x_traj, V_traj = models.simulate(derivative_lyaloss, 500, x0)
     plt.plot(torch.stack(V_traj).cpu().detach().squeeze().numpy())
     plt.savefig(os.path.join(os.getcwd(), "Vtraj_roa.png"))
 
-    # pdb.set_trace()
+    # plots a heat-map of the level-sets of the Lyapunov function where the 0 level-set is the equilibrium
     rho = derivative_lyaloss.get_rho().item()
     print("rho = ", rho)
     fig = plt.figure()
@@ -360,8 +394,6 @@ def main(cfg: DictConfig):
     )
     fig.show()
     plt.savefig(os.path.join(os.getcwd(), "V_roa.png"))
-
-
 
 def linearize_sympy(x, u, t_yaw):
     pos_x, pos_y, pos_z, psi, theta, phi = symbols('pos_x pos_y pos_z psi theta phi')

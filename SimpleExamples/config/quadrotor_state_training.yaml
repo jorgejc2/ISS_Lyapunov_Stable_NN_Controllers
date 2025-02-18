@@ -48,4 +48,4 @@ loss:
   l1_reg: 0
   candidate_roa_states:
     - [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]
-  always_candidate_roa_regulizer: True
+  always_candidate_roa_regularizer: True

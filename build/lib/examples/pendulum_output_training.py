@@ -267,7 +267,7 @@ def main(cfg: DictConfig):
                 candidate_roa_states_weight=cfg.loss.candidate_roa_states_weight[n],
                 lr_scheduler=cfg.train.lr_scheduler,
                 hard_max=cfg.train.hard_max,
-                always_candidate_roa_regulizer=cfg.loss.always_candidate_roa_regulizer,
+                always_candidate_roa_regularizer=cfg.loss.always_candidate_roa_regularizer,
             )
 
         torch.save(

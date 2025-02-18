@@ -44,4 +44,4 @@ loss:
   candidate_roa_states_weight: 0.0001
   observer_ratio: 0.0001
   candidate_scale: 2.0
-  always_candidate_roa_regulizer: True
+  always_candidate_roa_regularizer: True

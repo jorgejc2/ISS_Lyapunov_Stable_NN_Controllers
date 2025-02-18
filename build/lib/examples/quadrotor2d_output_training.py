@@ -226,7 +226,7 @@ def main(cfg: DictConfig):
             candidate_roa_states_weight=cfg.loss.candidate_roa_states_weight,
             hard_max=hard_max,
             lr_scheduler=cfg.train.lr_scheduler,
-            always_candidate_roa_regulizer=cfg.loss.always_candidate_roa_regulizer,
+            always_candidate_roa_regularizer=cfg.loss.always_candidate_roa_regularizer,
         )
 
     # "Verify" Lyapunov conditions with PGD attack
