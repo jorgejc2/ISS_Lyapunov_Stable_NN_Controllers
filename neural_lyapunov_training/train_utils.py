@@ -224,11 +224,12 @@ def compute_ibp_loss(
         max_violation = bound_output.max().item()
     else:
         # skip bound computation
-        grid_lower, grid_upper = generate_grids(lower_limit, upper_limit, grid_size)
+        #grid_lower, grid_upper = generate_grids(lower_limit, upper_limit, grid_size)
         bound_loss = torch.tensor(0.0, device=device)
         unsatisfied_bounds = 0
         max_violation = 0
-        bound_output = torch.zeros(size=(grid_lower.size(0), 0))
+        #bound_output = torch.zeros(size=(grid_lower.size(0), 0))
+        bound_output = torch.zeros(size=(int(torch.prod(grid_size).item()), 0))
     return IbpLossReturn(bound_output, bound_loss, unsatisfied_bounds, max_violation)
 
 
