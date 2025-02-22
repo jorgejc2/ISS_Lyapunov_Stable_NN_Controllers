@@ -9,6 +9,7 @@ import logging
 import torch
 from torch import Tensor
 import numpy as np
+from numpy import ndarray
 import wandb
 from auto_LiRPA import BoundedTensor, BoundedModule
 from auto_LiRPA.perturbations import PerturbationLpNorm
@@ -16,6 +17,28 @@ from auto_LiRPA.eps_scheduler import SmoothedScheduler
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import neural_lyapunov_training.lyapunov as lyapunov
+
+def calculate_grid_size_mb(grid_size: Union[int, ndarray, Tensor], n_dim: int, el_bytes: int = 4) -> int:
+    """
+    Returns the number of megabytes that will be used if 'generate_grids' is called.
+    :param grid_size:   The number of elements along each dimension in the grid
+    :param n_dim:       The dimension of the grid
+    :param el_bytes:    The number of bytes per element in the grid
+    :return:            The number of megabytes of the entire grid
+    """
+    if isinstance(grid_size, (ndarray, Tensor)):
+        assert len(grid_size.shape) == 1, "Expected a 1D array or tensor"
+
+    grid_sizes = [grid_size] * n_dim if isinstance(grid_size, int) else grid_size
+    cartesian_elements = 1
+    for n in range(n_dim):
+        cartesian_elements *= grid_sizes[n]
+
+    num_elements = cartesian_elements * n_dim
+    num_bytes = num_elements * el_bytes
+    num_mb = num_bytes // (1024**2)
+
+    return num_mb
 
 
 def generate_grids(lower_limit, upper_limit, grid_size):

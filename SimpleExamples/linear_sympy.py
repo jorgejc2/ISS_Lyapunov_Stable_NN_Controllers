@@ -2,7 +2,7 @@ from sympy import symbols, cos, sin, tan, Matrix
 
 # def linearize_sympy(x, u, t_yaw):
 # Define symbols
-x1, x2, x3, x4, x5, x6, x6, x7, x8, x9, x10, x11, x12 = symbols('x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12')
+x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12 = symbols('x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12')
 u1, u2, u3 = symbols('u1 u2 u3')
 t_yaw = symbols('t_yaw')
 
