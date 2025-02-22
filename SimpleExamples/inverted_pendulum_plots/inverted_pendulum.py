@@ -293,6 +293,20 @@ def main(show, save):
     lqr_samples = x @ K.permute(1, 0)  # get the control feedback for these states
     controller = SimpleNNController(n_dim, m_dim).to(device=set_t["device"])  # initialize a simple NN controller
     losses = approximate(controller, x, lqr_samples, lr=0.01, max_iter=1000)  # fit the NN to the LQR controller
+    controller = SimpleNNController(in_dim=5, out_dim=1)  # Ensure input size is 5 # TEMP DELETE LATER
+    torch.save(controller.state_dict(), "nn_controller.pth")  # save the controller
+    
+    weights, biases = extract_weights(controller)
+
+    # Save weights and biases as .npy files for transfer
+    for i, (w, b) in enumerate(zip(weights, biases)):
+        np.save(f"weights_layer_{i}.npy", w)
+        np.save(f"biases_layer_{i}.npy", b)
+
+    # Print the weights and biases to copy-paste if necessary
+    for i, (w, b) in enumerate(zip(weights, biases)):
+        print(f"Layer {i} Weights:\n{w}")
+        print(f"Layer {i} Biases:\n{b}")
 
     # plot the training loss
     plt.figure(figsize=(12, 8))
@@ -319,6 +333,12 @@ def main(show, save):
     plot_states(time_steps, states, r"State Trajectories with NN Controller",
                 [r"$\theta$", r"$\dot{\theta}$"], pendulum_continuous.x_equilibrium,
                 show, "nn_control.png" if save else None)
+
+def extract_weights(nn_controller):
+    # Extract weights and biases from each layer
+    weights = [layer.weight.detach().cpu().numpy() for layer in nn_controller.model if isinstance(layer, nn.Linear)]
+    biases = [layer.bias.detach().cpu().numpy() for layer in nn_controller.model if isinstance(layer, nn.Linear)]
+    return weights, biases
 
 if __name__ == '__main__':
     show_plots = True
