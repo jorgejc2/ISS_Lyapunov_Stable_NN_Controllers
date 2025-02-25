@@ -6,6 +6,8 @@ import time
 import torch
 import torch.nn as nn
 
+# from custom_inverted_pendulum import CustomInvertedPendulum
+
 to_numpy = lambda x : x.detach().cpu().numpy()
 
 def relu(x):
@@ -24,11 +26,11 @@ class SmallReactivePolicy:
     self.weights_final_b = np.load(os.path.join(weights_dir, "biases_layer_2.npy"))
 
 	# Debugging shapes
-    print("observation_space.shape:", observation_space.shape)
-    print("action_space.shape:", action_space.shape)
-    print("weights_dense1_w.shape:", self.weights_dense1_w.shape)
-    print("weights_dense2_w.shape:", self.weights_dense2_w.shape)
-    print("weights_final_w.shape:", self.weights_final_w.shape)
+    # print("observation_space.shape:", observation_space.shape)
+    # print("action_space.shape:", action_space.shape)
+    # print("weights_dense1_w.shape:", self.weights_dense1_w.shape)
+    # print("weights_dense2_w.shape:", self.weights_dense2_w.shape)
+    # print("weights_final_w.shape:", self.weights_final_w.shape)
 
 	# Ensure the input/output dimensions match the environment
     assert self.weights_dense1_w.shape[0] == observation_space.shape[0], \
@@ -61,31 +63,36 @@ class SimpleNNController(nn.Module):
 
 def main():
   print("Create environment")
-  env = gym.make("InvertedPendulumBulletEnv-v0")
+  # env = gym.make("InvertedPendulumBulletEnv-v0")
+
+  from custom_inverted_pendulum import RealTimeFixedInvertedPendulumEnv
+  env = RealTimeFixedInvertedPendulumEnv()
+
+
   env.render(mode="human")
 
   # Path to your custom weights directory
-  weight_dir = os.path.join(os.path.dirname(__file__), "customWeights")
+  weight_dir = os.path.join(os.path.dirname(__file__), "customWeightsOld")
   # pi = SmallReactivePolicy(env.observation_space, env.action_space, weight_dir)
   pi = SimpleNNController(env.observation_space.shape[0], env.action_space.shape[0])
 
 
 
 
-  print(f"Expected input size: {env.observation_space.shape[0]}")
-  print(f"Expected output size: {env.action_space.shape[0]}")
+  # print(f"Expected input size: {env.observation_space.shape[0]}")
+  # print(f"Expected output size: {env.action_space.shape[0]}")
 
-  print("Model structure:")
-  print(pi)
+  # print("Model structure:")
+  # print(pi)
 
-  file_path = os.path.join(weight_dir, "nn_controller.pth")
-  checkpoint = torch.load(file_path)
-  for key, value in checkpoint.items():
-      print(f"Checkpoint layer: {key}, shape: {value.shape}")
+  # file_path = os.path.join(weight_dir, "nn_controller.pth")
+  # checkpoint = torch.load(file_path)
+  # for key, value in checkpoint.items():
+  #   print(f"Checkpoint layer: {key}, shape: {value.shape}")
 
 
 
-  pi.load_state_dict(torch.load(os.path.join(weight_dir, "nn_controller.pth"))) #FIX PATH
+  pi.load_state_dict(torch.load(os.path.join(weight_dir, "nn_controller.pth")))
 
   while 1:
     frame = 0
