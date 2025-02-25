@@ -174,10 +174,10 @@ values = {
     km: 7.94e-12,
     kf: 3.16e-10,
     u1: 0.1, u2: 0.12, u3: 0.13, u4: 0.14,
-    # F1: u1**2 *kf,
-    # F2: u2**2 *kf,
-    # F3: u3**2 *kf,
-    # F4: u4**2 *kf
+    F1: u1**2 *kf,
+    F2: u2**2 *kf,
+    F3: u3**2 *kf,
+    F4: u4**2 *kf
 }
 
 # Substitute values into the matrix
