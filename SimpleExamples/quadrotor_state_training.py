@@ -21,19 +21,19 @@ dtype = torch.float
 
 to_numpy = lambda x : x.detach().cpu().numpy()
 
-# def compute_lqr(quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics):
-   # x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
-    # u_equilibrium = quadrotor_tracking_continous.u_equilibrium.to(device)
-    # A_batch, B_batch = quadrotor_tracking_continous.linearized_dynamics(
-    #    x_equilibrium.unsqueeze(0), u_equilibrium.unsqueeze(0)
-    #)
-    #A = A_batch.squeeze(0).cpu().detach().numpy()
-    #B = B_batch.squeeze(0).cpu().detach().numpy()
-    #Q = np.eye(quadrotor_tracking_continous.nx)
-    #R = np.eye(quadrotor_tracking_continous.nu)
-    #S = scipy.linalg.solve_continuous_are(A, B, Q, R)
-    #K = -np.linalg.solve(R, B.T @ S)
-    #return K, S
+def compute_lqr(quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics):
+   x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
+    u_equilibrium = quadrotor_tracking_continous.u_equilibrium.to(device)
+    A_batch, B_batch = quadrotor_tracking_continous.linearized_dynamics(
+       x_equilibrium.unsqueeze(0), u_equilibrium.unsqueeze(0)
+    )
+    A = A_batch.squeeze(0).cpu().detach().numpy()
+    B = B_batch.squeeze(0).cpu().detach().numpy()
+    Q = np.eye(quadrotor_tracking_continous.nx)
+    R = np.eye(quadrotor_tracking_continous.nu)
+    S = scipy.linalg.solve_continuous_are(A, B, Q, R)
+    K = -np.linalg.solve(R, B.T @ S)
+    return K, S
 
 def approximate_lqr(
     quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics,
