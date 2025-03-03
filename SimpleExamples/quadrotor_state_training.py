@@ -1,34 +1,35 @@
+from typing import Union, Tuple, Optional, List, Dict
 import os
 import hydra
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
-import quadrotor_dynamics
+from new_quadrotor_dynamics import QuadrotorDynamics
 from omegaconf import DictConfig, OmegaConf
-from sympy import symbols, cos, sin, tan, Matrix
 import torch
 import torch.nn as nn
+from torch import Tensor
 import wandb
 import neural_lyapunov_training.controllers as controllers
 import neural_lyapunov_training.dynamical_system as dynamical_system
 import neural_lyapunov_training.lyapunov as lyapunov
 import neural_lyapunov_training.models as models
-import neural_lyapunov_training.path_tracking as path_tracking
 import neural_lyapunov_training.train_utils as train_utils
+import scipy
 
 device = torch.device("cpu")
 dtype = torch.float
 
-to_numpy = lambda x : x.detach().cpu().numpy()
+to_numpy = lambda x : x.detach().cpu().numpy() if isinstance(x, Tensor) else x
 
-def compute_lqr(quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics):
-   x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
+def compute_lqr(quadrotor_tracking_continous: QuadrotorDynamics):
+    x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
     u_equilibrium = quadrotor_tracking_continous.u_equilibrium.to(device)
     A_batch, B_batch = quadrotor_tracking_continous.linearized_dynamics(
        x_equilibrium.unsqueeze(0), u_equilibrium.unsqueeze(0)
     )
-    A = A_batch.squeeze(0).cpu().detach().numpy()
-    B = B_batch.squeeze(0).cpu().detach().numpy()
+    A = to_numpy(A_batch.squeeze(0))
+    B = to_numpy(B_batch.squeeze(0))
     Q = np.eye(quadrotor_tracking_continous.nx)
     R = np.eye(quadrotor_tracking_continous.nu)
     S = scipy.linalg.solve_continuous_are(A, B, Q, R)
@@ -36,7 +37,7 @@ def compute_lqr(quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynami
     return K, S
 
 def approximate_lqr(
-    quadrotor_tracking_continous: quadrotor_dynamics.QuadrotorDynamics,
+    quadrotor_tracking_continous: QuadrotorDynamics,
     controller: controllers.NeuralNetworkController,
     lyapunov_nn: lyapunov.NeuralNetworkLyapunov,
     upper_limit: torch.Tensor,
@@ -94,7 +95,7 @@ def main(cfg: DictConfig):
     train_utils.set_seed(cfg.seed)
 
     dt = cfg.model.dt
-    quadrotor_tracking_continous = quadrotor_dynamics.QuadrotorDynamics()
+    quadrotor_tracking_continous = QuadrotorDynamics()
     dynamics = dynamical_system.QuadrotorSystem(
         quadrotor_tracking_continous,
         dt=dt)
@@ -105,8 +106,8 @@ def main(cfg: DictConfig):
         out_dim=quadrotor_tracking_continous.nu,
         hidden_dim=8,
         clip_output="clamp",
-        u_lo=torch.tensor([-0.84]*3),
-        u_up=torch.tensor([0.84]*3),
+        u_lo=torch.tensor([-0.84]*4),
+        u_up=torch.tensor([0.84]*4),
         x_equilibrium=quadrotor_tracking_continous.x_equilibrium,
         u_equilibrium=quadrotor_tracking_continous.u_equilibrium,
     )
@@ -114,15 +115,22 @@ def main(cfg: DictConfig):
 
     absolute_output = True
     if cfg.model.lyapunov.quadratic:
-        # _, S = compute_lqr(quadrotor_tracking_continous)
-        # S_torch = torch.from_numpy(S).type(dtype).to(device)
-        # R = torch.linalg.cholesky(S_torch)
+        # update the equilibrium point of the system
+        quadrotor_tracking_continous.x_equilibrium = torch.tensor([
+        10., 10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ])
+        quadrotor_tracking_continous.u_equilibrium = torch.tensor([
+        25., 25, 25, 25
+        ])
+        _, S = compute_lqr(quadrotor_tracking_continous)
+        S_torch = torch.from_numpy(S).type(dtype).to(device)
+        R = torch.linalg.cholesky(S_torch)
         lyapunov_nn = lyapunov.NeuralNetworkQuadraticLyapunov(
             goal_state=torch.zeros(quadrotor_tracking_continous.nx, dtype=dtype).to(device),
             x_dim=quadrotor_tracking_continous.nx,
             R_rows=quadrotor_tracking_continous.nx,
             eps=0.01,
-            # R=R,
+            R=R,
         )
     else:
         lyapunov_nn = lyapunov.NeuralNetworkLyapunov(

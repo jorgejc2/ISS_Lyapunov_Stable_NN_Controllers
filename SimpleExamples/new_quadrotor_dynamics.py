@@ -46,7 +46,7 @@ class QuadrotorDynamics:
         self.J_x = j_x  # Moment of inertia around x-axis (kg·m²)
         self.J_y = j_y  # Moment of inertia around y-axis (kg·m²)
         self.J_z = j_z  # Moment of inertia around z-axis (kg·m²)
-        self.J = torch.diag(torch.tensor[self.J_x, self.J_y, self.J_z])  # Moment of inertia matrix
+        self.J = torch.diag(torch.tensor([self.J_x, self.J_y, self.J_z]))  # Moment of inertia matrix
         self.J_INV = torch.linalg.inv(self.J)  # Inverse of the moment of inertia matrix
         self.arm_length = arm_length  # Distance from the center to a propeller (m)
         self.kf = kf  # Thrust coefficient
@@ -168,7 +168,7 @@ class QuadrotorDynamics:
         # Parse the values that will be substituted into A and B
         state_t = [t for t in to_numpy(x_t.flatten())]
         control_t = [t for t in to_numpy(u_t.flatten())]
-        px_t, py_t, pz_t, vx_t, vy_t, vz_t, ax_t, ay_t, az_t, phi_t, theta_t, psi_t, p_t, q_t, r_t = state_t
+        px_t, py_t, pz_t, vx_t, vy_t, vz_t, phi_t, theta_t, psi_t, p_t, q_t, r_t = state_t
         u1_t, u2_t, u3_t, u4_t = control_t
         values: Dict[sp.symbols, float] = {
             L: self.arm_length,
@@ -177,7 +177,6 @@ class QuadrotorDynamics:
             I3: self.J_z,
             px: px_t, py: py_t, pz: pz_t,
             vx: vx_t, vy: vy_t, vz: vz_t,
-            ax: ax_t, ay: ay_t, az: az_t,
             p: p_t, q: q_t, r: r_t,
             phi: phi_t, theta: theta_t, psi: psi_t,
             g: self.g,
@@ -196,8 +195,8 @@ class QuadrotorDynamics:
         B_numeric = B_sym.subs(values)
         A_numpy = np.array(A_numeric.evalf(), dtype=np.float32)
         B_numpy = np.array(B_numeric.evalf(), dtype=np.float32)
-        A_t = torch.from_numpy(A_numpy).to(x_t)
-        B_t = torch.from_numpy(B_numpy).to(x_t)
+        A_t = torch.from_numpy(A_numpy).to(x_t).unsqueeze(0)
+        B_t = torch.from_numpy(B_numpy).to(x_t).unsqueeze(0)
 
         # Check that this linear system is controllable
         n = A_numpy.shape[1]  # state dimension
@@ -216,6 +215,26 @@ class QuadrotorDynamics:
         assert can_ctrl, f"The system is not controllable w.r.t. equilibrium\nx: \n{to_numpy(x)}\nu: \n{to_numpy(u)}"
 
         return A_t, B_t
+
+    ## properties ##
+    @property
+    def x_equilibrium(self):
+        return self._x_equilibrium
+
+    @property
+    def u_equilibrium(self):
+        return self._u_equilibrium
+
+    ## setters ##
+    @x_equilibrium.setter
+    def x_equilibrium(self, value: Tensor):
+        assert len(value.flatten()) == self.nx, "The new value for x_equilibrium is not the correct shape."
+        self._x_equilibrium = value
+
+    @u_equilibrium.setter
+    def u_equilibrium(self, value: Tensor):
+        assert len(value.flatten()) == self.nu, "The new value for u_equilibrium is not the correct shape."
+        self._u_equilibrium = value
 
     ## static methods ##
     @staticmethod
@@ -356,25 +375,3 @@ class QuadrotorDynamics:
 
         quaternion = torch.stack([w, x, y, z], dim=1)
         return quaternion
-
-    ## properties ##
-    @property
-    def x_equilibrium(self):
-        return self._x_equilibrium
-
-    @property
-    def u_equilibrium(self):
-        return self._u_equilibrium
-
-    ## setters ##
-    @x_equilibrium.setter
-    def x_equilibrium(self, value: Tensor):
-        self._x_equilibrium = value
-
-    @u_equilibrium.setter
-    def u_equilibrium(self, value: Tensor):
-        self._u_equilibrium = value
-    
-
-    
-    
