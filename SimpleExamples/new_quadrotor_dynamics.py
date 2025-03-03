@@ -1,6 +1,11 @@
+from typing import Union, Tuple, Optional, List, Dict
 import torch
 import sympy as sp
 from torch import Tensor
+import numpy as np
+from numpy import ndarray
+
+to_numpy = lambda x : x.detach().cpu().numpy() if isinstance(x, Tensor) else x
 
 class QuadrotorDynamics:
 
@@ -58,6 +63,10 @@ class QuadrotorDynamics:
         self.dw_coeff_2 = dw_coeff_2
         self.dw_coeff_3 = dw_coeff_3
 
+        # By default, the equilibrium state/control will be all 0's but that can be updated
+        self._x_equilibrium = torch.zeros((self.nx,))
+        self._u_equilibrium = torch.zeros((self.nu,))
+
     def forward(self, x: Tensor, u: Tensor) -> Tensor:
         """
         A forward pass of the model dynamics. Dynamics faithfully follow those described by Daniel Mellinger in
@@ -112,106 +121,101 @@ class QuadrotorDynamics:
         dx[:, 9:12] = angular_acc  # Angular velocity derivatives (angular acceleration)
         return dx
 
-    @staticmethod
-    def linearize_sympy(x, u, t_yaw):
-        pos_x, pos_y, pos_z, psi, theta, phi = sp.symbols('pos_x pos_y pos_z psi theta phi')
-        vel_x, vel_y, vel_z = sp.symbols('vel_x vel_y vel_z')
-        psi_dot, phi_dot, theta_dot = sp.symbols('psi_dot phi_dot theta_dot')
-        m, g, Jx, Jy, Jz = sp.symbols('m g Jx Jy Jz')
-        fx, fy, fz = sp.symbols('fx fy fz')
-        taux, tauy, tauz = sp.symbols('taux tauy tauz')
-        J_x: float = 0.054,
-        J_y: float = 0.054
-        J_z: float = 0.104
+    def linearized_dynamics(self, x_t: Tensor, u_t: Tensor) -> Tuple[Tensor, Tensor]:
 
-        # States (theta, thete_dot)
-        x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]  # positions
-        x4, x5, x6 = x[:, 3], x[:, 4], x[:, 5]  # velocities
-        x7, x8, x9 = x[:, 6], x[:, 7], x[:, 8]  # angles
-        x10, x11, x12 = x[:, 9], x[:, 10], x[:, 11]  # angular rates
+        # Define parameters, state variables and control input
+        m, g, km, kf = sp.symbols('m g km kf')  # Position, velocity, control
+        phi, theta, psi = sp.symbols('phi theta psi')
+        L = sp.symbols('L')
+        p, q, r = sp.symbols('p q r')
+        F1, F2, F3, F4 = sp.symbols('F1 F2 F3 F4')
+        F = sp.Matrix([F1, F2, F3, F4])
+        I1, I2, I3 = sp.symbols('I1 I2 I3')
+        I = sp.Matrix([[I1, 0, 0], [0, I2, 0], [0, 0, I3]])
+        I_inv = I.inv()
+        px, py, pz, vx, vy, vz, ax, ay, az = sp.symbols('px py pz vx vy vz ax ay az')
+        u1, u2, u3, u4 = sp.symbols('u1 u2 u3 u4')
+        u = sp.Matrix([u1, u2, u3, u4])
+        F1 = u1 ** 2 * kf
+        F2 = u2 ** 2 * kf
+        F3 = u3 ** 2 * kf
+        F4 = u4 ** 2 * kf
+        M1 = u1 ** 2 * km
+        M2 = u2 ** 2 * km
+        M3 = u3 ** 2 * km
+        M4 = u4 ** 2 * km
 
-        # Control inputs
-        u1, u2, u3 = u[:, 0], u[:, 1], u[:, 2]  # force/torque inputs
+        # the rotation matrix from the quadrotor's body frame to the world frame
+        R = sp.Matrix([[sp.cos(psi) * sp.cos(theta) - sp.sin(phi) * sp.sin(psi) * sp.sin(theta), -sp.cos(phi) * sp.sin(psi),
+                     sp.cos(psi) * sp.sin(theta) + sp.cos(theta) * sp.sin(phi) * sp.sin(psi)],
+                    [sp.cos(theta) * sp.sin(psi) + sp.cos(psi) * sp.sin(phi) * sp.sin(theta), sp.cos(phi) * sp.cos(psi),
+                     sp.sin(psi) * sp.sin(theta) - sp.cos(psi) * sp.cos(theta) * sp.sin(phi)],
+                    [-sp.cos(phi) * sp.sin(theta), sp.sin(phi), sp.cos(phi) * sp.cos(theta)]])
 
-        # Translational dynamics (position derivatives)
-        dx1 = sp.cos(x8) * sp.cos(x9) * x4 + (sp.sin(x7) * sp.sin(x8) * sp.cos(x9) - sp.cos(x7) * sp.sin(x9)) * x5 + (
-                    sp.cos(x7) * sp.sin(x8) * sp.cos(x9) + sp.sin(x7) * sp.sin(x9)) * x6
-        dx2 = sp.cos(x8) * sp.sin(x9) * x4 + (sp.sin(x7) * sp.sin(x8) * sp.sin(x9) + sp.cos(x7) * sp.cos(x9)) * x5 + (
-                    sp.cos(x7) * sp.sin(x8) * sp.sin(x9) - sp.sin(x7) * sp.cos(x9)) * x6
-        dx3 = sp.sin(x8) * x4 - sp.sin(x7) * sp.cos(x8) * x5 - sp.cos(x7) * sp.cos(x8) * x6
+        # the equations describing our positional acceleration
+        acc_matrix = (1 / m) * ((sp.Matrix([0, 0, -m * g]) + R @ sp.Matrix([0, 0, F1 + F2 + F3 + F4])))
+        ang_matrix = I_inv @ (sp.Matrix([[L * (F2 - F4)], [L * (F3 - F1)], [M1 - M2 + M3 - M4]]) - (
+                    sp.Matrix([[0, p, q], [-p, 0, r], [-q, -r, 0]]) @ (I @ sp.Matrix([p, q, r]))))
 
-        # Linear acceleration (body frame)
-        dx4 = x12 * x5 - x11 * x6 - g * sp.sin(x8)
-        dx5 = x10 * x6 - x12 * x4 + g * sp.cos(x8) * sp.sin(x7)
-        dx6 = x11 * x4 - x10 * x5 + g * sp.cos(x8) * sp.cos(x7) - u1 / m
+        # Form the state and derivative vector
+        x = sp.Matrix([px, py, pz, vx, vy, vz, phi, theta, psi, p, q, r])
+        xdot = sp.Matrix([vx, vy, vz, *acc_matrix[:, 0], p, q, r, *ang_matrix[:, 0]])
 
-        # Rotational dynamics (angles)
-        dx7 = x10 + sp.sin(x7) * sp.tan(x8) * x11 + sp.cos(x7) * sp.tan(x8) * x12
-        dx8 = sp.cos(x7) * x11 - sp.sin(x7) * x12
-        dx9 = (sp.sin(x7) / sp.cos(x8)) * x11 - (sp.cos(x7) / sp.cos(x8)) * x12
+        # Get A and B by calculating the Jacobian w.r.t. the state and control
+        A_sym = xdot.jacobian(x)
+        B_sym = xdot.jacobian(u)
 
-        # Angular accelerations
-        dx10 = ((J_y - J_z) / J_x) * x11 * x12 + u2 / J_x
-        dx11 = ((J_z - J_x) / J_y) * x10 * x12 + u3 / J_y
-        dx12 = ((J_x - J_y) / J_z) * x10 * x11 + t_yaw / J_z
+        # Parse the values that will be substituted into A and B
+        state_t = [t for t in to_numpy(x_t.flatten())]
+        control_t = [t for t in to_numpy(u_t.flatten())]
+        px_t, py_t, pz_t, vx_t, vy_t, vz_t, ax_t, ay_t, az_t, phi_t, theta_t, psi_t, p_t, q_t, r_t = state_t
+        u1_t, u2_t, u3_t, u4_t = control_t
+        values: Dict[sp.symbols, float] = {
+            L: self.arm_length,
+            I1: self.J_x,
+            I2: self.J_y,
+            I3: self.J_z,
+            px: px_t, py: py_t, pz: pz_t,
+            vx: vx_t, vy: vy_t, vz: vz_t,
+            ax: ax_t, ay: ay_t, az: az_t,
+            p: p_t, q: q_t, r: r_t,
+            phi: phi_t, theta: theta_t, psi: psi_t,
+            g: self.g,
+            km: self.km,
+            kf: self.kf,
+            u1: u1_t, u2: u2_t, u3: u3_t, u4: u4_t,
+            F1: u1 ** 2 * kf,
+            F2: u2 ** 2 * kf,
+            F3: u3 ** 2 * kf,
+            F4: u4 ** 2 * kf,
+            m: self.m
+        }
 
-        # Concatenate dynamics into a single vector
-        dynamics_vector = sp.Matrix([
-            dx1,
-            dx2,
-            dx3,
-            dx4,
-            dx5,
-            dx6,
-            dx7,
-            dx8,
-            dx9,
-            dx10,
-            dx11,
-            dx12
-        ])
+        # Substitute values into the matrices
+        A_numeric = A_sym.subs(values)
+        B_numeric = B_sym.subs(values)
+        A_numpy = np.array(A_numeric.evalf(), dtype=np.float32)
+        B_numpy = np.array(B_numeric.evalf(), dtype=np.float32)
+        A_t = torch.from_numpy(A_numpy).to(x_t)
+        B_t = torch.from_numpy(B_numpy).to(x_t)
 
-        # Define variables with respect to which to compute Jacobian
-        variables_A = [pos_x, pos_y, pos_z, psi, theta, phi, vel_x, vel_y, vel_z, psi_dot, phi_dot, theta_dot]
-        variables_B = [taux, tauy, tauz, fz]
+        # Check that this linear system is controllable
+        n = A_numpy.shape[1]  # state dimension
+        m = B_numpy.shape[1]  # control dimension
 
-        # Compute Jacobian matrices
-        A = dynamics_vector.jacobian(variables_A)
-        B = dynamics_vector.jacobian(variables_B)
+        # Use Cayley-Hamilton theorem to create a (n, nxm) controllability matrix whose rank tells us
+        # how many states in the system are controllable.
+        ctrl_matrix = B_numpy
+        for i in range(1, n):
+            ctrl_matrix = np.hstack((ctrl_matrix, np.linalg.matrix_power(A_numpy, i) @ B_numpy))
+        assert ctrl_matrix.shape == (
+        n, n * m), f"Controllability matrix does not have the proper shape of ({(n, n * m)})"
 
-        print("A =")
-        print(A)
-        print("\nB =")
-        print(B)
+        ctrl_rank = np.linalg.matrix_rank(ctrl_matrix)
+        can_ctrl = ctrl_rank >= A_numpy.shape[1]
+        assert can_ctrl, f"The system is not controllable w.r.t. equilibrium\nx: \n{to_numpy(x)}\nu: \n{to_numpy(u)}"
 
-    def linearized_dynamics(self, x, u):
-        # FIXME: This linearized dynamics are not correct. Ideally, the linearization should be cross-checked
-        # with a symbolic tool that Matlab and SymPy both provide.
-        device = x.device
-        batch_size = x.shape[0]
-        A = torch.zeros((batch_size, self.nx, self.nx))
-        B = torch.zeros((batch_size, self.nx, self.nu))
-        
-        # Position-velocity relationships
-        A[:, 0, 3] = 1  # dx1/dx4
-        A[:, 1, 4] = 1  # dx2/dx5
-        A[:, 2, 5] = 1  # dx3/dx6
-
-        # Linearized velocity relationships
-        A[:, 3, 7] = -self.g * torch.sin(x[:, 7])  # dx4/dx8 (pitch affects forward acceleration)
-        A[:, 4, 6] = self.g * torch.cos(x[:, 7]) * torch.sin(x[:, 6])  # dx5/dx7 (roll affects lateral acceleration)
-        A[:, 5, 6] = -self.g * torch.cos(x[:, 7]) * torch.cos(x[:, 6])  # dx6/dx7 (altitude affected by roll and pitch)
-
-        # Angular velocity-rotation relationships
-        A[:, 6, 9] = 1   # d(theta)/d(omega_x)
-        A[:, 7, 10] = 1  # d(phi)/d(omega_y)
-        A[:, 8, 11] = 1  # d(psi)/d(omega_z)
-       
-        B[:, 5, 0] = -1 / self.m  # Effect of thrust on vertical acceleration
-        B[:, 9, 1] = 1 / self.J_x  # Control effect of u2 (roll torque) on omega_x
-        B[:, 10, 2] = 1 / self.J_y  # Control effect of u3 (pitch torque) on omega_y
-
-        return A.to(device), B.to(device)
+        return A_t, B_t
 
     ## static methods ##
     @staticmethod
@@ -352,14 +356,25 @@ class QuadrotorDynamics:
 
         quaternion = torch.stack([w, x, y, z], dim=1)
         return quaternion
-    
+
     ## properties ##
     @property
     def x_equilibrium(self):
-        return torch.zeros((2,))
+        return self._x_equilibrium
 
     @property
     def u_equilibrium(self):
-        return torch.zeros((1,))
+        return self._u_equilibrium
+
+    ## setters ##
+    @x_equilibrium.setter
+    def x_equilibrium(self, value: Tensor):
+        self._x_equilibrium = value
+
+    @u_equilibrium.setter
+    def u_equilibrium(self, value: Tensor):
+        self._u_equilibrium = value
+    
+
     
     
