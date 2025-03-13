@@ -46,7 +46,7 @@ def approximate_lqr(
     K, S = compute_lqr(quadrotor_tracking_continous)
     K_torch = torch.from_numpy(K).type(dtype).to(device)
     S_torch = torch.from_numpy(S).type(dtype).to(device)
-    x = (torch.rand((100000, 2), dtype=dtype, device=device) - 0.5) * 2 * upper_limit
+    x = (torch.rand((100000, quadrotor_tracking_continous.nx), dtype=dtype, device=device) - 0.5) * 2 * upper_limit
     V = torch.sum(x * (x @ S_torch), axis=1, keepdim=True)
     u = x @ K_torch.T
 
@@ -59,7 +59,9 @@ def approximate_lqr(
             output.backward()
             optimizer.step()
 
+    print("Approximating the LQR controller")
     approximate(controller, x, u, lr=0.01, max_iter=500)
+    print("Approximating the Lyapunov function from LQR")
     approximate(lyapunov_nn, x, V, lr=0.01, max_iter=1000)
 
 
@@ -106,8 +108,8 @@ def main(cfg: DictConfig):
         out_dim=quadrotor_tracking_continous.nu,
         hidden_dim=8,
         clip_output="clamp",
-        u_lo=torch.tensor([-0.84]*4),
-        u_up=torch.tensor([0.84]*4),
+        u_lo=torch.tensor([0.]*4),
+        u_up=torch.tensor([100]*4),
         x_equilibrium=quadrotor_tracking_continous.x_equilibrium,
         u_equilibrium=quadrotor_tracking_continous.u_equilibrium,
     )
@@ -116,9 +118,9 @@ def main(cfg: DictConfig):
     absolute_output = True
     if cfg.model.lyapunov.quadratic:
         # update the equilibrium point of the system
-        quadrotor_tracking_continous.x_equilibrium = torch.tensor([
-        10., 10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ])
+        # quadrotor_tracking_continous.x_equilibrium = torch.tensor([
+        # 10., 10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        # ])
         quadrotor_tracking_continous.u_equilibrium = torch.tensor([
         25., 25, 25, 25
         ])
@@ -126,7 +128,7 @@ def main(cfg: DictConfig):
         S_torch = torch.from_numpy(S).type(dtype).to(device)
         R = torch.linalg.cholesky(S_torch)
         lyapunov_nn = lyapunov.NeuralNetworkQuadraticLyapunov(
-            goal_state=torch.zeros(quadrotor_tracking_continous.nx, dtype=dtype).to(device),
+            goal_state=quadrotor_tracking_continous.x_equilibrium.to(device),
             x_dim=quadrotor_tracking_continous.nx,
             R_rows=quadrotor_tracking_continous.nx,
             eps=0.01,
@@ -150,8 +152,8 @@ def main(cfg: DictConfig):
         dynamics,
         controller,
         lyapunov_nn,
-        box_lo=0,
-        box_up=0,
+        box_lo=0,  # will be updated in the training for-loop
+        box_up=0,  # will be updated in the training for-loop
         rho_multiplier=1,
         kappa=kappa,
         hard_max=cfg.train.hard_max,
@@ -162,14 +164,19 @@ def main(cfg: DictConfig):
     lyapunov_nn.to(device)
     grid_size = torch.tensor([50]*(quadrotor_tracking_continous.nx), device=device)
     logger = logging.getLogger(__name__)
-    # if cfg.approximate_lqr:
-    #     approximate_lqr(
-    #         quadrotor_tracking_continous, controller, lyapunov_nn, upper_limit, logger
-    #     )
-    #     torch.save(
-    #         {"state_dict": derivative_lyaloss.state_dict()},
-    #         os.path.join(os.getcwd(), "lyaloss_lqr.pth"),
-    #     )
+    if cfg.approximate_lqr:
+        # Get the upper limit for the first limit_scale and get the NN controller and lya function to approximate the
+        # LQR controller and lya function.
+        limit_scale = cfg.model.limit_scale[0]
+        lya_upper_limit = limit_scale * torch.tensor(cfg.model.limit, device=device)
+        approximate_lqr(
+            quadrotor_tracking_continous, controller, lyapunov_nn, lya_upper_limit, logger
+        )
+        print("Done approximating LQR, saving the model...")
+        torch.save(
+            {"state_dict": derivative_lyaloss.state_dict()},
+            os.path.join(os.getcwd(), "lyaloss_lqr.pth"),
+        )
 
     if cfg.model.load_lyaloss is not None:
         load_lyaloss = os.path.join(

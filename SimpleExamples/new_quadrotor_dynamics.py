@@ -3,7 +3,6 @@ import torch
 import sympy as sp
 from torch import Tensor
 import numpy as np
-from numpy import ndarray
 
 to_numpy = lambda x : x.detach().cpu().numpy() if isinstance(x, Tensor) else x
 
@@ -74,6 +73,9 @@ class QuadrotorDynamics:
         x: state (batch, 12); 
         u: controller input (batch, 4).
         """
+        assert x.ndim == u.ndim == 2, "The state and control input should be batched."
+        assert x.shape[1] == self.nx, f"The state should have dimension {self.nx}."
+        assert u.shape[1] == self.nu, f"The control should have dimension {self.nu}."
         # States
         batch = x.shape[0]
         pos_x, pos_y, pos_z = x[:, 0], x[:, 1], x[:, 2]  # Positions
@@ -81,15 +83,15 @@ class QuadrotorDynamics:
         vel_x, vel_y, vel_z = x[:, 6], x[:, 7], x[:, 8]  # Velocities
         ang_vel_x, ang_vel_y, ang_vel_z = x[:, 9], x[:, 10], x[:, 11]  # Angular velocities
 
-        # Control inputs (motor RPMs)
-        rpm_motor_1, rpm_motor_2, rpm_motor_3, rpm_motor_4 = (
-            u[:, 0], u[:, 1], u[:, 2], u[:, 3])
+        # Control inputs (motor RPMs); Commented out since we don't need to unpack u;
+        # rpm_motor_1, rpm_motor_2, rpm_motor_3, rpm_motor_4 = (
+        #     u[:, 0], u[:, 1], u[:, 2], u[:, 3])
 
         # We convert the angular speed of each motor into its vertical force. The equation for this is:
         # Fᵢ = kf ωᵢ²
         forces = (u**2) * self.kf # shape (batch, nu)
-        thrust = torch.zeros(batch, 3)
-        thrust[:, 2] = forces.sum(1)
+        thrust = torch.zeros(batch, 3).to(forces)
+        thrust[:, 2] = forces.sum(dim=1)
         
         quat = torch.stack((roll,pitch,yaw), dim=1) # shape (batch, 3)
         rotation = self.compute_rotation_matrix(quat) # shape (batch, 3, 3)
@@ -104,13 +106,14 @@ class QuadrotorDynamics:
         ang_vels = torch.stack((ang_vel_x, ang_vel_y, ang_vel_z), dim=1) # shape(batch, 3)
         # The torque or moment about the z-axis uses different constants where we now use the formula:
         # Fᵢ = km ωᵢ²
-        z_torque = (u**2) * self.km
+        moments = (u**2) * self.km
+        z_torque = moments[:, 0] - moments[:, 1] + moments[:, 2] - moments[:, 3]
         x_torque = (forces[:, 1] - forces[:, 3]) * self.arm_length
         y_torque = (-forces[:,0] + forces[:, 2]) * self.arm_length
         torques = torch.stack((x_torque, y_torque, z_torque), dim=1) # shape (batch, 3)
         
         torques = torques - torch.cross(ang_vels, torch.einsum('mn,bn->bm', self.J, ang_vels), dim=1)
-        angular_acc = torch.einsum('bmn,bn->bm', self.J_INV, torques)
+        angular_acc = torch.einsum('mn,bn->bm', self.J_INV, torques)
         # b = batch, m = 3, n = 3
 
         # Kinematic equations
