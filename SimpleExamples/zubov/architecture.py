@@ -103,7 +103,7 @@ class ZubovNetwork(nn.Module):
         min_idx = torch.where(mask, min_l_idx, min_u_idx)
         border = torch.where(mask, x_L[b, min_l_idx], x_U[b, min_u_idx])
 
-        x[b, min_idx] = border[b]  # perform projection
+        x[b, min_idx] = border  # perform projection
 
         return x
 

@@ -336,8 +336,8 @@ def main(show, save):
 
 def extract_weights(nn_controller):
     # Extract weights and biases from each layer
-    weights = [layer.weight.detach().cpu().numpy() for layer in nn_controller.model if isinstance(layer, nn.Linear)]
-    biases = [layer.bias.detach().cpu().numpy() for layer in nn_controller.model if isinstance(layer, nn.Linear)]
+    weights = [to_numpy(layer.weight) for layer in nn_controller.model if isinstance(layer, nn.Linear)]
+    biases = [to_numpy(layer.bias) for layer in nn_controller.model if isinstance(layer, nn.Linear)]
     return weights, biases
 
 if __name__ == '__main__':
