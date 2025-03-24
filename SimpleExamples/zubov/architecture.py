@@ -1,16 +1,41 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from functools import partial
 from torch import Tensor, optim
 from collections import OrderedDict
 from typing import Tuple, Union, Optional, Dict, List, Callable
+from SimpleExamples.zubov.neural_building_blocks import *
 
 to_numpy = lambda x : x.detach().cpu().numpy() if isinstance(x, Tensor) else x
+
+### Custom LR Schedulers
+def linear_decay(epoch, initial_lr, final_lr, total_epochs, last_decay):
+    """
+
+    :param epoch:
+    :param initial_lr:
+    :param final_lr:
+    :param total_epochs:
+    :param last_decay:
+    :return:
+    """
+    # FIXME: Currently hard-coded to a tailored configuration that shows stable convergence. The parameters should
+    # be modified instead of hard-coded.
+    if epoch < 25:
+        total_epochs = 25
+        return 1 - epoch / total_epochs * (1 - final_lr / initial_lr)
+    else:
+        return last_decay
 
 class ZubovNetwork(nn.Module):
 
     def __init__(self, dynamical_system, lambda_b: float, lb: Tensor, ub: Tensor, alpha: float, width: int,
-                 n_layers: int, input_dim: int, lrate: float,
-                 horizon:float=1200, weight_decay:float=1e-5, clip_gradient_norm: Optional[float] = None):
+                 n_layers: int, input_dim: int, lrate: float, num_epochs: int,
+                 horizon:float=1200, weight_decay:float=1e-5, clip_gradient_norm: Optional[float] = None,
+                 c1: float = 5e1, c2: float = 3e3, c3: float = 1e2,
+                 step_size: Optional[int] = None, gamma: Optional[float] = None,
+                 final_lrate: Optional[float] = None, scheduler_type: Optional[str] = None):
         """
 
         :param dynamical_system:
@@ -38,7 +63,7 @@ class ZubovNetwork(nn.Module):
         # append the last layer
         layers.extend([
             (f"Linear_{i}", nn.Linear(width, 1)),
-            (f"Activation_{i}", nn.Sigmoid())  # output of Zubov W(x) ∈ [0,1]
+            (f"Activation_{i}", nn.Tanh())  # output of Zubov W(x) ∈ [0,1]
         ])
         self.model = nn.Sequential(OrderedDict(layers))
         self.lrate = lrate
@@ -47,12 +72,30 @@ class ZubovNetwork(nn.Module):
         self.lambda_b = lambda_b
         self.lb = lb
         self.ub = ub
+        self.c1 = c1
+        self.c2 = c2
+        self.c3 = c3
         self.input_dim = input_dim
         self.alpha = alpha
         self.horizon = horizon
         self.num_steps = int(horizon / self.dynamical_system.dt)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
         self.clip_gradient_norm = clip_gradient_norm
+
+        # set linear LR scheduler
+        self.scheduler = None
+        if scheduler_type == 'step':
+            assert step_size is not None and gamma is not None, "Must specify step size and gamma to use Step LR"
+            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size,
+                                                             gamma=gamma)
+        elif scheduler_type == 'linear':
+            decay_func_siren = partial(linear_decay, initial_lr=lrate, final_lr=final_lrate,
+                                       total_epochs=num_epochs, last_decay=1e-3)
+            self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=decay_func_siren)
+        elif scheduler_type == 'none':
+            pass
+        else:
+            raise ValueError(f"Scheduler type of {scheduler_type} is not recognized")
 
     def forward(self, x: Tensor) -> Tensor:
         return self.model(x)
@@ -170,7 +213,8 @@ class ZubovNetwork(nn.Module):
         loss_p2 = self.alpha * (1 - yhat) * (1 + yhat) * psi_output
         loss_p = (loss_p1 + loss_p2)**2
         loss_b = self.lambda_b * (self.forward(x_b) - 1).abs()
-        loss = loss_z + loss_r + loss_p + loss_b
+        # loss_b = 0.
+        loss = self.c1 * loss_z + self.c2 * loss_r + self.c3 * loss_p + loss_b
         total_loss = loss.mean()
 
         # perform backward gradient calculations
@@ -186,6 +230,347 @@ class ZubovNetwork(nn.Module):
 
         rest_losses = [t.mean().item() if isinstance(t, Tensor) else t for t in [loss_z, loss_r, loss_p, loss_b]]
         return total_loss.item(), *rest_losses
+
+    def scheduler_step(self) -> Tuple[float, Optional[float]]:
+        """
+        Steps the siren and latent schedulers if they are being used.
+        In addition, returns the siren learning rate (should always exist) and latent learning rate (optionally exists)
+        before the scheduling step.
+        :return:
+        """
+
+        # step scheduler
+        if self.scheduler is not None:
+            self.scheduler.step()
+            last_lr = self.scheduler.get_last_lr()[0]
+        else:
+            last_lr = self.lrate
+
+        return last_lr, None
+
+class ZubovNetworkWithSiren(nn.Module):
+    def __init__(self, dynamical_system, lambda_b: float, lb: Tensor, ub: Tensor, alpha: float,
+                 input_dim: int, hidden_features: int, hidden_layers: int, output_dim: int,
+                 siren_lrate: float, latent_lrate: float, num_epochs: int, horizon: float = 1200,
+                 final_siren_lrate: Optional[float] = None, final_latent_lrate: Optional[float] = None,
+                 first_omega_0: int = 30, hidden_omega_0: float = 30., latent_dim: int = 0,
+                 step_size: Optional[int] = None, gamma: Optional[float] = None,
+                 c1: float = 5e1, c2: float = 3e3, c3: float = 1e2,
+                 clip_gradient_norm: Optional[float] = None, scheduler_type: str = 'none'
+        ):
+        """
+
+        Initializes a Siren model for fitting weak signed distance functions. Latent variables are supported as
+        well for modulation.
+
+        :param in_features:         Input dimension
+        :param hidden_features:     Hidden layer width
+        :param hidden_layers:       Number of hidden layers
+        :param out_features:        Output dimension
+        :param siren_lrate:         Learning rate for Siren network
+        :param latent_lrate:        Learning rate for latent variable parameters
+        :param first_omega_0:       omega to use for first Siren layer
+        :param hidden_omega_0:      omegas to use for intermediate Siren layers
+        :param latent_dim:          Dimension of the latent variable
+        :param step_size:           Number of steps before applying LR Scheduler
+        :param gamma:               LR Scheduler Decay
+        :param c1:                  First penalization parameter for Eikonal loss function (reference Siren paper for more details)
+        :param c2:                  Second penalization parameter for Eikonal loss function (reference Siren paper for more details)
+        :param c3:                  Third penalization parameter for Eikonal loss function (reference Siren paper for more details)
+        :param clip_gradient_norm:  Max norm to clip model gradients. Helps with stabilization when using latent variables.
+        """
+        super().__init__()
+        if final_siren_lrate is None: final_siren_lrate = siren_lrate
+        if final_latent_lrate is None: final_latent_lrate = latent_lrate
+        self.hidden_layers = hidden_layers
+        self.clip_gradient_norm = clip_gradient_norm
+        self.latent, self.modulator = None, None
+        self.c1, self.c2, self.c3 = c1, c2, c3
+        self.has_latent = latent_dim > 0
+        self.dynamical_system = dynamical_system
+        self.lambda_b = lambda_b
+        self.lb = lb
+        self.ub = ub
+        self.alpha = alpha
+        self.horizon = horizon
+        self.num_steps = int(horizon / self.dynamical_system.dt)
+        self.input_dim = input_dim
+        # optimizable parameters
+        self.opt_latent_parameters = []
+        self.opt_siren_parameters = []
+
+        # If using modulation, instantiate a modulator network and an optimizable latent tensor
+        # The modulator network and latent tensor are optimized separately from the Siren network for more
+        # fine-grained control
+        if latent_dim > 0:
+            self.modulator = Modulator(
+                dim_in=latent_dim,
+                dim_hidden=hidden_features,
+                num_layers=hidden_layers
+            )
+            # initialize latent input to the modulator network which will also be optimizable
+            self.latent = nn.Parameter(torch.zeros(latent_dim).normal_(0, 1e-2))
+            # append all optimizable parameters in the latent input and modulator network
+            self.opt_latent_parameters.extend([
+                self.latent,
+                *self.modulator.parameters(),
+            ])
+
+        # append first layer and all hidden layers
+        self.model = []
+        for i in range(hidden_layers):
+            idx_str = f"{i:4d}_SineLayer"
+            is_first = i == 0
+            omega_0 = first_omega_0 if is_first else hidden_omega_0
+            in_dim = input_dim if is_first else hidden_features
+            self.model.append(
+                (idx_str, SineLayer(in_dim, hidden_features,
+                                    is_first=is_first, omega_0=omega_0))
+            )
+
+        # append last layer
+        self.model.append(
+            ("LastLayer", nn.Sequential(nn.Linear(hidden_features, output_dim), nn.Tanh()))
+        )
+
+        # ModuleDict makes it easier to get layers by name
+        self.model = nn.ModuleDict(OrderedDict(self.model))
+        # get all Siren optimizable parameters as a list for the Siren Adam Optimizer
+        for l in self.model.values():
+            self.opt_siren_parameters.extend(l.parameters())
+        # if using modulation, initialize its optimizer and save its learning rate
+        if self.has_latent:
+            self.latent_optimizer = optim.Adam(self.opt_latent_parameters, lr=latent_lrate)
+            self.latent_lrate = latent_lrate
+        else:
+            self.latent_optimizer = None
+            self.latent_lrate = None
+
+        self.siren_optimizer = optim.Adam(self.opt_siren_parameters, lr=siren_lrate)
+        self.siren_lrate = siren_lrate
+        self.loss_fn = nn.MSELoss(reduction='none')  # only used for 'step_naive' method
+
+        # set linear LR scheduler
+        self.siren_scheduler, self.latent_scheduler = None, None
+        if scheduler_type == 'step':
+            assert step_size is not None and gamma is not None, "Must specify step size and gamma to use Step LR"
+            self.siren_scheduler = optim.lr_scheduler.StepLR(self.siren_optimizer, step_size=step_size,
+                                                             gamma=gamma)
+            if self.has_latent:
+                self.latent_scheduler = optim.lr_scheduler.StepLR(self.latent_optimizer, step_size=step_size,
+                                                                  gamma=gamma)
+        elif scheduler_type == 'linear':
+            decay_func_siren = partial(linear_decay, initial_lr=siren_lrate, final_lr=final_siren_lrate,
+                                       total_epochs=num_epochs, last_decay=1e-3)
+            self.siren_scheduler = optim.lr_scheduler.LambdaLR(self.siren_optimizer, lr_lambda=decay_func_siren)
+            if self.has_latent:
+                decay_func_latent = partial(linear_decay, initial_lr=latent_lrate, final_lr=final_latent_lrate,
+                                            total_epochs=num_epochs, last_decay=1e-2)
+                self.latent_scheduler = optim.lr_scheduler.LambdaLR(self.latent_optimizer, lr_lambda=decay_func_latent)
+        elif scheduler_type == 'none':
+            pass
+        else:
+            raise ValueError(f"Scheduler type of {scheduler_type} is not recognized")
+
+    def _get_mods(self) -> Tuple[Union[None, Tensor], ...]:
+        # create mods (simply tuple of Nones if not enabled)
+        if self.has_latent:
+            latent_input = self.latent
+            mods = self.modulator(latent_input)
+        else:
+            mods = tuple([None] * self.hidden_layers)
+        return mods
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Simple forward pass of the network
+        :param x: (batches, 3)
+        :return:
+        """
+
+        # get mods
+        mods = self._get_mods()
+
+        hidden_layers = tuple([l for (k, l) in self.model.items() if k.split('_')[-1] == 'SineLayer'])
+        last_layer = self.model['LastLayer']
+        for l, mod in zip(hidden_layers, mods):
+            # pass through sine layer
+            x = l(x)
+
+            # apply mod if feature is enabled
+            if mod is not None:
+                x *= mod.unsqueeze(0)  # singleton allows mod to be broadcast to all batches
+
+        # apply output layer
+        x = last_layer(x)
+
+        return x
+
+    def forward_with_coords(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+
+        Before the forward pass, clone the input and enable its gradient. Returning this cloned input allows the
+        output of the network to be differentiated w.r.t. the input.
+
+        :param x: (batches, input_dim)
+        :return:
+        """
+        x = x.clone().detach().requires_grad_(True)  # allows to take derivative w.r.t. input
+
+        output = self.forward(x)
+
+        return output, x
+
+    @staticmethod
+    def maximal_lyapunov_fn(traj: Tensor) -> Tensor:
+        """
+        The true maximal Lyapunov function takes value:
+
+        * ∫₀ᴴ ‖x(t;x₀)‖ dt where H = ∞ if the initial state x₀ is stabilizable
+        * ∞ if the initial state x₀ is not stabilizable
+
+        Since it is difficult to calculate this integral, we instead perform a discrete calculation
+        that serves as an estimate of the true maximal Lyapunov function definition.
+        This function returns the value:
+
+        ∑ᵢ₌₀ᴺ ‖x(i⋅Δt; x₀)‖
+
+        where Δt is the discrete time step of our system, and H = Δt⋅N where 1 < N < ∞ or the
+        number of discrete time steps to run the trajectory for.
+
+        :param traj:
+        :return:
+        """
+        traj_norm = torch.linalg.vector_norm(traj, dim=2)
+        lya_discrete = traj_norm.sum(dim=1, keepdim=True)
+
+        return lya_discrete
+
+    @staticmethod
+    def project_to_box_border(x: Tensor, x_L: Tensor, x_U: Tensor) -> Tensor:
+        """
+
+        :param x:       box samples
+        :param x_L:     lower limit box to project onto
+        :param x_U:     upper limit box to project onto
+        :return:
+        """
+
+        # For points inside the box, project to the nearest boundary
+        x_L = x_L.reshape(1, -1).expand(x.shape[0], -1)
+        x_U = x_U.reshape(1, -1).expand(x.shape[0], -1)
+        b = torch.arange(x.shape[0])
+
+        # x = torch.clamp(x, min=x_L, max=x_U)
+        min_l, min_l_idx = torch.min((x - x_L).abs(), dim=1)
+        min_u, min_u_idx = torch.min((x - x_U).abs(), dim=1)
+
+        mask = min_l < min_u
+        min_idx = torch.where(mask, min_l_idx, min_u_idx)
+        border = torch.where(mask, x_L[b, min_l_idx], x_U[b, min_u_idx])
+
+        x[b, min_idx] = border  # perform projection
+
+        return x
+
+    def step(self, x: Tensor, x_b: Tensor, u: Callable) -> Tuple[float, List[float]]:
+        """
+
+        :param x: (batch_size, input_dim)
+        :return:
+        """
+
+        # function to calculate gradients of y w.r.t. x
+        def _gradient(x: Tensor, y: Tensor, grad_outputs=None):
+            if grad_outputs is None:
+                grad_outputs = torch.ones_like(y)
+            grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
+            return grad
+
+        psi = lambda t: torch.linalg.vector_norm(t, dim=1, keepdim=True)
+
+        # Get points on the border of the region of interest, ∂R₂ where R₂ = {αx : x ∈ R₁},
+        # R₁ ⊆ 𝒟, and 𝒟 is the region from which we are drawing samples.
+        # x_b = ZubovNetwork.project_to_box_border(self.alpha*x, self.lb, self.ub)
+
+        with torch.no_grad():
+            # in case dynamical system is described as another NN, we do not want to update its parameter
+            # fx = self.dynamical_system(x)  # return the next state
+            traj = self.dynamical_system(x, u, self.num_steps)  # return the trajectory
+            fx = traj[:, 0, :]  # get the next state
+            max_v = ZubovNetwork.maximal_lyapunov_fn(traj)
+            psi_output = psi(x)
+
+        # zero the gradients
+        self.siren_optimizer.zero_grad()
+        if self.has_latent:
+            self.latent_optimizer.zero_grad()
+
+        yhat, coords = self.forward_with_coords(x)  # zubov output
+
+        grad_output = _gradient(coords, yhat)  # grad of zubov w.r.t. x
+
+        # Loss Z ensures that at the equilibrium, the output of W(x) is 0.
+        loss_z = (self.forward(torch.zeros((1, self.input_dim))) ** 2)
+        # Loss R ensures that W(x) = tanh(a*V(x)) where V(x) in this implementation is
+        # an approximation of the defined Maximal Lyapunov function
+        loss_r = (yhat - torch.tanh(self.alpha * max_v)) ** 2
+        # Loss P is the derivative condition: ∂ₓW(x)ᵀf(x) = a(1−W(x))(1+W(x))Φ(x)
+        # where Φ(x) := ‖x‖
+        loss_p1 = torch.einsum('bi,bi->b', grad_output, fx).unsqueeze(1)
+        loss_p2 = self.alpha * (1 - yhat) * (1 + yhat) * psi_output
+        loss_p = (loss_p1 + loss_p2) ** 2
+        # loss_b = self.lambda_b * (self.forward(x_b) - 1).abs()
+        loss_b = 0.
+        loss = self.c1 * loss_z + self.c2 * loss_r + self.c3 * loss_p + loss_b
+        total_loss = loss.mean()
+
+        # perform backward gradient calculations
+        total_loss.backward()
+
+        # perform gradient clipping
+        # typically recommended for stable training
+        if self.clip_gradient_norm is not None:
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.clip_gradient_norm)
+
+        # perform gradient clipping
+        # typically recommended for stable training
+        if self.clip_gradient_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.opt_siren_parameters, max_norm=self.clip_gradient_norm)
+            if self.has_latent:
+                torch.nn.utils.clip_grad_norm_(self.opt_latent_parameters, max_norm=self.clip_gradient_norm)
+
+        # optimize all parameters
+        self.siren_optimizer.step()
+        if self.has_latent:
+            self.latent_optimizer.step()
+
+        rest_losses = [t.mean().item() if isinstance(t, Tensor) else t for t in [loss_z, loss_r, loss_p, loss_b]]
+        return total_loss.item(), *rest_losses
+
+    def scheduler_step(self) -> Tuple[float, Optional[float]]:
+        """
+        Steps the siren and latent schedulers if they are being used.
+        In addition, returns the siren learning rate (should always exist) and latent learning rate (optionally exists)
+        before the scheduling step.
+        :return:
+        """
+
+        # step with siren scheduler
+        if self.siren_scheduler is not None:
+            self.siren_scheduler.step()
+            siren_lr = self.siren_scheduler.get_last_lr()[0]
+        else:
+            siren_lr = self.siren_lrate
+
+        # step with latent scheduler
+        if self.has_latent and self.latent_scheduler is not None:
+            self.latent_scheduler.step()
+            latent_lr = self.latent_scheduler.get_last_lr()[0]
+        else:
+            latent_lr = self.latent_lrate
+
+        return siren_lr, latent_lr
 
 
 if __name__ == "__main__":
