@@ -4,6 +4,7 @@ import hydra
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy import ndarray
 from new_quadrotor_dynamics import QuadrotorDynamics
 from omegaconf import DictConfig, OmegaConf
 import torch
@@ -25,30 +26,61 @@ to_numpy = lambda x : x.detach().cpu().numpy() if isinstance(x, Tensor) else x
 def compute_lqr(quadrotor_tracking_continous: QuadrotorDynamics):
     x_equilibrium = quadrotor_tracking_continous.x_equilibrium.to(device)
     u_equilibrium = quadrotor_tracking_continous.u_equilibrium.to(device)
-    A_batch, B_batch = quadrotor_tracking_continous.linearized_dynamics(
-       x_equilibrium.unsqueeze(0), u_equilibrium.unsqueeze(0)
+    t_A, t_B = quadrotor_tracking_continous.linearized_dynamics(
+       x_equilibrium, u_equilibrium
     )
-    A = to_numpy(A_batch.squeeze(0))
-    B = to_numpy(B_batch.squeeze(0))
+    A = to_numpy(t_A)
+    B = to_numpy(t_B)
+    # check to see that the system is controllable
+    ctrl_matrix = get_controllability_matrix(A, B)
+    ctrl_rank = np.linalg.matrix_rank(ctrl_matrix)
+    can_ctrl = ctrl_rank >= A.shape[1]
+    assert can_ctrl, f"This system is not controllable."
+
     Q = np.eye(quadrotor_tracking_continous.nx)
+    Q[:3] *= 400 # increases cost for positions being away from equilibrium
     R = np.eye(quadrotor_tracking_continous.nu)
     S = scipy.linalg.solve_continuous_are(A, B, Q, R)
-    K = -np.linalg.solve(R, B.T @ S)
+    K = np.linalg.solve(R, B.T @ S)
     return K, S
+
+def get_controllability_matrix(a: ndarray, b: ndarray) -> ndarray:
+    """
+    For an LTI system, return its controllability matrix.
+    :param a: Linear state equations w.r.t. current state.
+    :param b: Linear state equations w.r.t. input.
+    :return:
+    """
+    n = a.shape[1]  # state dimension
+    m = b.shape[1]  # control dimension
+
+    # Use Cayley-Hamilton theorem to create a (n, nxm) controllability matrix whose rank tells us
+    # how many states in the system are controllable.
+    ctrl_matrix = b
+    for i in range(1, n):
+        ctrl_matrix = np.hstack((ctrl_matrix, np.linalg.matrix_power(a, i)@b))
+    assert ctrl_matrix.shape == (n, n*m), f"Controllability matrix does not have the proper shape of ({(n, n*m)})"
+    return ctrl_matrix
 
 def approximate_lqr(
     quadrotor_tracking_continous: QuadrotorDynamics,
     controller: controllers.NeuralNetworkController,
     lyapunov_nn: lyapunov.NeuralNetworkLyapunov,
-    upper_limit: torch.Tensor,
+    lower_limit: Tensor,
+    upper_limit: Tensor,
     logger,
 ):
     K, S = compute_lqr(quadrotor_tracking_continous)
     K_torch = torch.from_numpy(K).type(dtype).to(device)
     S_torch = torch.from_numpy(S).type(dtype).to(device)
-    x = (torch.rand((100000, quadrotor_tracking_continous.nx), dtype=dtype, device=device) - 0.5) * 2 * upper_limit
+    range_limit = (upper_limit - lower_limit).reshape(1, -1)
+    lower_limit = lower_limit.reshape(1, -1)
+    upper_limit = upper_limit.reshape(1, -1)
+    x = (torch.rand((100000, quadrotor_tracking_continous.nx), dtype=dtype, device=device) * range_limit) + lower_limit
     V = torch.sum(x * (x @ S_torch), axis=1, keepdim=True)
-    u = x @ K_torch.T
+    x_bar = x - quadrotor_tracking_continous.x_equilibrium.reshape(1, -1)
+    u = quadrotor_tracking_continous.u_equilibrium.reshape(1, -1) + torch.einsum("mn,bn->bm", -K_torch, x_bar)
+    # u = x @ K_torch.T
 
     def approximate(system, system_input, target, lr, max_iter):
         optimizer = torch.optim.Adam(system.parameters(), lr=lr)
@@ -60,9 +92,9 @@ def approximate_lqr(
             optimizer.step()
 
     print("Approximating the LQR controller")
-    approximate(controller, x, u, lr=0.01, max_iter=500)
+    approximate(controller, x, u, 0.01, 500)
     print("Approximating the Lyapunov function from LQR")
-    approximate(lyapunov_nn, x, V, lr=0.01, max_iter=1000)
+    approximate(lyapunov_nn, x, V, 0.01, 1000)
 
 
 def plot_V_heatmap(V, lower_limit, upper_limit, rho):
@@ -98,18 +130,28 @@ def main(cfg: DictConfig):
 
     dt = cfg.model.dt
     quadrotor_tracking_continous = QuadrotorDynamics()
-    dynamics = dynamical_system.QuadrotorSystem(
+    dynamics = dynamical_system.SecondOrderDiscreteTimeSystem(
         quadrotor_tracking_continous,
-        dt=dt)
+        dt=dt
+    )
+    # dynamics = dynamical_system.QuadrotorSystem(
+    #     quadrotor_tracking_continous,
+    #     dt=dt)
+
+    # update the equilibrium point of the system
+    quadrotor_tracking_continous.x_equilibrium = torch.tensor([
+        10., 10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ])
+    quadrotor_tracking_continous.u_equilibrium = torch.tensor([14475.809152959684] * 4)
    
     controller = controllers.NeuralNetworkController(
-        nlayer=4,
+        nlayer=5,
         in_dim=quadrotor_tracking_continous.nx,
         out_dim=quadrotor_tracking_continous.nu,
-        hidden_dim=8,
+        hidden_dim=64,
         clip_output="clamp",
         u_lo=torch.tensor([0.]*4),
-        u_up=torch.tensor([100]*4),
+        u_up=torch.tensor([18000]*4),  # reported upper limit of crazyflie 2.0 drone
         x_equilibrium=quadrotor_tracking_continous.x_equilibrium,
         u_equilibrium=quadrotor_tracking_continous.u_equilibrium,
     )
@@ -117,13 +159,6 @@ def main(cfg: DictConfig):
 
     absolute_output = True
     if cfg.model.lyapunov.quadratic:
-        # update the equilibrium point of the system
-        # quadrotor_tracking_continous.x_equilibrium = torch.tensor([
-        # 10., 10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        # ])
-        quadrotor_tracking_continous.u_equilibrium = torch.tensor([
-        25., 25, 25, 25
-        ])
         _, S = compute_lqr(quadrotor_tracking_continous)
         S_torch = torch.from_numpy(S).type(dtype).to(device)
         R = torch.linalg.cholesky(S_torch)
@@ -168,9 +203,11 @@ def main(cfg: DictConfig):
         # Get the upper limit for the first limit_scale and get the NN controller and lya function to approximate the
         # LQR controller and lya function.
         limit_scale = cfg.model.limit_scale[0]
-        lya_upper_limit = limit_scale * torch.tensor(cfg.model.limit, device=device)
+        lya_limit_epsilon = limit_scale * torch.tensor(cfg.model.limit, device=device)
+        lya_lower_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) - lya_limit_epsilon
+        lya_upper_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) + lya_limit_epsilon
         approximate_lqr(
-            quadrotor_tracking_continous, controller, lyapunov_nn, lya_upper_limit, logger
+            quadrotor_tracking_continous, controller, lyapunov_nn, lya_lower_limit, lya_upper_limit, logger
         )
         print("Done approximating LQR, saving the model...")
         torch.save(
@@ -217,9 +254,9 @@ def main(cfg: DictConfig):
 
             # get the input box for this iteration
             limit_scale = cfg.model.limit_scale[n]
-            limit = limit_scale * torch.tensor(cfg.model.limit, device=device)
-            lower_limit = -limit
-            upper_limit = limit
+            limit_epsilon = limit_scale * torch.tensor(cfg.model.limit, device=device)
+            lower_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) - limit_epsilon
+            upper_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) + limit_epsilon
 
             # Constructs the Lyapunov derivative loss which ensures that states covered by the rho level-set
             # indeed are Lyapunov stable
@@ -293,15 +330,16 @@ def main(cfg: DictConfig):
     else:
         # we do not want to train any network but rather the maximum (or minimum) value of a previously trained
         # Lyapunov network at inputs that lie on the border of the input box
-        limit = cfg.model.limit_scale[-1] * torch.tensor(cfg.model.limit, device=device)
-        lower_limit = -limit
-        upper_limit = limit
+        limit_scale = cfg.model.limit_scale[-1]
+        limit_epsilon = limit_scale * torch.tensor(cfg.model.limit, device=device)
+        lower_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) - limit_epsilon
+        upper_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) + limit_epsilon
         derivative_lyaloss.x_boundary = train_utils.calc_V_extreme_on_boundary_pgd(
             lyapunov_nn,
             lower_limit,
             upper_limit,
             num_samples_per_boundary=cfg.train.num_samples_per_boundary,
-            eps=limit,
+            eps=limit_epsilon,
             steps=100,
             direction="minimize",
         )
@@ -335,7 +373,7 @@ def main(cfg: DictConfig):
                 lower_limit,
                 upper_limit,
                 num_samples_per_boundary=cfg.train.num_samples_per_boundary,
-                eps=limit,
+                eps=limit_epsilon,
                 steps=pgd_steps,
                 direction="minimize",
             )
@@ -345,20 +383,25 @@ def main(cfg: DictConfig):
                 )
 
         # randomly sample the input box
+        limit_scale = cfg.model.limit_scale[-1]
+        limit_epsilon = limit_scale * torch.tensor(cfg.model.limit, device=device)
+        lower_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) - limit_epsilon
+        upper_limit = quadrotor_tracking_continous.x_equilibrium.to(device=device) + limit_epsilon
+        limit_range = (upper_limit - lower_limit).reshape(1, -1)
         x_check_start = (
             (
                 torch.rand((50000, 12), device=device)
                 - torch.full((12,), 0.5, device=device)
             )
-            * limit
-            * 2
+            * limit_range
+            + lower_limit.reshape(1, -1)
         )
 
         # run pgd attacks to find and return counter examples
         adv_x = train_utils.pgd_attack(
             x_check_start,
             derivative_lyaloss_check,
-            eps=limit,
+            eps=limit_epsilon,
             steps=cfg.pgd_verifier_steps,
             lower_boundary=lower_limit,
             upper_boundary=upper_limit,
@@ -389,7 +432,11 @@ def main(cfg: DictConfig):
 
     # Choose random points in the input box to visualize their trajectory. If the Lyapunov function can be verified,
     # then any points inside the rho level-set are guaranteed to converge to equilibrium.
-    x0 = (torch.rand((40, 12), device=device) - 0.5) * 2 * limit
+    x0 = (
+            torch.rand((40, 12), device=device)
+            * limit_range
+            + lower_limit.reshape(1, -1)
+          )
     x_traj, V_traj = models.simulate(derivative_lyaloss, 500, x0)
     plt.plot(torch.stack(V_traj).cpu().detach().squeeze().numpy())
     plt.savefig(os.path.join(os.getcwd(), "Vtraj_roa.png"))

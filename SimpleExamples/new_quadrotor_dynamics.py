@@ -40,6 +40,7 @@ class QuadrotorDynamics:
         """
         # Dimensions of state and control input
         self.nx = 12  # Number of state dimensions
+        self.nq = 6
         self.nu = 4   # Number of control inputs
         self.m = m  # Mass of the quadrotor (kg)
         self.J_x = j_x  # Moment of inertia around x-axis (kg·m²)
@@ -89,12 +90,12 @@ class QuadrotorDynamics:
 
         # We convert the angular speed of each motor into its vertical force. The equation for this is:
         # Fᵢ = kf ωᵢ²
-        forces = (u**2) * self.kf # shape (batch, nu)
+        forces = u**2 * self.kf  # shape (batch, nu)
         thrust = torch.zeros(batch, 3).to(forces)
         thrust[:, 2] = forces.sum(dim=1)
         
-        quat = torch.stack((roll,pitch,yaw), dim=1) # shape (batch, 3)
-        rotation = self.compute_rotation_matrix(quat) # shape (batch, 3, 3)
+        angles = torch.stack((roll,pitch,yaw), dim=1) # shape (batch, 3)
+        rotation = QuadrotorDynamics.compute_rotation_matrix(angles) # shape (batch, 3, 3)
         # perform batch matrix multiplication
         thrust_world_frame = torch.einsum('bmn,bn->bm', rotation, thrust)
         # b = batch, m = 3, n = 3 (even though m=n, we use different letters to eliminate ambiguity)
@@ -117,14 +118,18 @@ class QuadrotorDynamics:
         # b = batch, m = 3, n = 3
 
         # Kinematic equations
-        dx = torch.zeros_like(x)
-        dx[:, 0:3] = x[:, 3:6]  # Position derivatives (velocity)
-        dx[:, 3:6] = x[:, 6:9]  # Angular position derivatives (angular velocity)
-        dx[:, 6:9] = acc  # Velocity derivatives (acceleration)
-        dx[:, 9:12] = angular_acc  # Angular velocity derivatives (angular acceleration)
-        return dx
+        qddot = torch.cat((acc, angular_acc), dim=1)
+        # dx = torch.cat((x[:, self.nq:], acc, angular_acc), dim=1)
+        # dx = torch.zeros_like(x)
+        # dx[:, 0:3] = x[:, 3:6]  # Position derivatives (velocity)
+        # dx[:, 3:6] = x[:, 6:9]  # Angular position derivatives (angular velocity)
+        # dx[:, 6:9] = acc  # Velocity derivatives (acceleration)
+        # dx[:, 9:12] = angular_acc  # Angular velocity derivatives (angular acceleration)
+        return qddot
 
     def linearized_dynamics(self, x_t: Tensor, u_t: Tensor) -> Tuple[Tensor, Tensor]:
+        assert x_t.numel() == self.nx, f"x_t should have {self.nx} elements but instead has {x_t.numel()}."
+        assert u_t.numel() == self.nu, f"u_t should have {self.nu} elements but instead has {u_t.numel()}."
 
         # Define parameters, state variables and control input
         m, g, km, kf = sp.symbols('m g km kf')  # Position, velocity, control
@@ -161,8 +166,8 @@ class QuadrotorDynamics:
                     sp.Matrix([[0, p, q], [-p, 0, r], [-q, -r, 0]]) @ (I @ sp.Matrix([p, q, r]))))
 
         # Form the state and derivative vector
-        x = sp.Matrix([px, py, pz, vx, vy, vz, phi, theta, psi, p, q, r])
-        xdot = sp.Matrix([vx, vy, vz, *acc_matrix[:, 0], p, q, r, *ang_matrix[:, 0]])
+        x = sp.Matrix([px, py, pz, phi, theta, psi, vx, vy, vz, p, q, r])
+        xdot = sp.Matrix([vx, vy, vz, p, q, r, *acc_matrix[:, 0], *ang_matrix[:, 0]])
 
         # Get A and B by calculating the Jacobian w.r.t. the state and control
         A_sym = xdot.jacobian(x)
@@ -171,7 +176,7 @@ class QuadrotorDynamics:
         # Parse the values that will be substituted into A and B
         state_t = [t for t in to_numpy(x_t.flatten())]
         control_t = [t for t in to_numpy(u_t.flatten())]
-        px_t, py_t, pz_t, vx_t, vy_t, vz_t, phi_t, theta_t, psi_t, p_t, q_t, r_t = state_t
+        px_t, py_t, pz_t, phi_t, theta_t, psi_t, vx_t, vy_t, vz_t, p_t, q_t, r_t = state_t
         u1_t, u2_t, u3_t, u4_t = control_t
         values: Dict[sp.symbols, float] = {
             L: self.arm_length,
@@ -198,8 +203,8 @@ class QuadrotorDynamics:
         B_numeric = B_sym.subs(values)
         A_numpy = np.array(A_numeric.evalf(), dtype=np.float32)
         B_numpy = np.array(B_numeric.evalf(), dtype=np.float32)
-        A_t = torch.from_numpy(A_numpy).to(x_t).unsqueeze(0)
-        B_t = torch.from_numpy(B_numpy).to(x_t).unsqueeze(0)
+        A_t = torch.from_numpy(A_numpy).to(x_t)
+        B_t = torch.from_numpy(B_numpy).to(x_t)
 
         # Check that this linear system is controllable
         n = A_numpy.shape[1]  # state dimension
@@ -240,33 +245,48 @@ class QuadrotorDynamics:
         self._u_equilibrium = value
 
     ## static methods ##
+    # @staticmethod
+    # def compute_rotation_matrix(euler: Tensor) -> Tensor:
+    #     """
+    #     Compute the rotation matrix from roll, pitch, and yaw angles.
+    #     :param quat:    Tensor containing the roll, pitch, and yaw angles for all batches
+    #     :return:        Rotation matrix using these angles to transform from body to world frame
+    #     """
+    #     batch = euler.shape[0]
+    #     roll, pitch, yaw = euler[:, 0], euler[:, 1], euler[:, 2]  # unpack angles
+    #
+    #     # precompute trigonometric results
+    #     c_roll, s_roll = torch.cos(roll), torch.sin(roll)
+    #     c_pitch, s_pitch = torch.cos(pitch), torch.sin(pitch)
+    #     c_yaw, s_yaw = torch.cos(yaw), torch.sin(yaw)
+    #
+    #     # initialize and fill rotation matrix
+    #     R = torch.zeros((batch, 3, 3), device=roll.device)
+    #     R[:, 0, 0] = c_yaw * c_pitch
+    #     R[:, 0, 1] = c_yaw * s_pitch * s_roll - s_yaw * c_roll
+    #     R[:, 0, 2] = c_yaw * s_pitch * c_roll + s_yaw * s_roll
+    #     R[:, 1, 0] = s_yaw * c_pitch
+    #     R[:, 1, 1] = s_yaw * s_pitch * s_roll + c_yaw * c_roll
+    #     R[:, 1, 2] = s_yaw * s_pitch * c_roll - c_yaw * s_roll
+    #     R[:, 2, 0] = -s_pitch
+    #     R[:, 2, 1] = c_pitch * s_roll
+    #     R[:, 2, 2] = c_pitch * c_roll
+    #     return R
     @staticmethod
-    def compute_rotation_matrix(euler: Tensor) -> Tensor:
-        """
-        Compute the rotation matrix from roll, pitch, and yaw angles.
-        :param quat:    Tensor containing the roll, pitch, and yaw angles for all batches
-        :return:        Rotation matrix using these angles to transform from body to world frame
-        """
-        batch = euler.shape[0]
-        roll, pitch, yaw = euler[:, 0], euler[:, 1], euler[:, 2]  # unpack angles
+    def compute_rotation_matrix(angles: Tensor) -> Tensor:
 
-        # precompute trigonometric results
-        c_roll, s_roll = torch.cos(roll), torch.sin(roll)
-        c_pitch, s_pitch = torch.cos(pitch), torch.sin(pitch)
-        c_yaw, s_yaw = torch.cos(yaw), torch.sin(yaw)
+        phi, theta, psi = angles[:, 0], angles[:, 1], angles[:, 2] # unpack angles
+        ts, tc = torch.sin, torch.cos # to save space
 
-        # initialize and fill rotation matrix
-        R = torch.zeros((batch, 3, 3), device=roll.device)
-        R[:, 0, 0] = c_yaw * c_pitch
-        R[:, 0, 1] = c_yaw * s_pitch * s_roll - s_yaw * c_roll
-        R[:, 0, 2] = c_yaw * s_pitch * c_roll + s_yaw * s_roll
-        R[:, 1, 0] = s_yaw * c_pitch
-        R[:, 1, 1] = s_yaw * s_pitch * s_roll + c_yaw * c_roll
-        R[:, 1, 2] = s_yaw * s_pitch * c_roll - c_yaw * s_roll
-        R[:, 2, 0] = -s_pitch
-        R[:, 2, 1] = c_pitch * s_roll
-        R[:, 2, 2] = c_pitch * c_roll
-        return R
+        # calculate rotation matrix
+        ret = torch.stack([
+            torch.stack([tc(psi)*tc(theta) - ts(phi)*ts(psi)*ts(theta), -tc(phi)*ts(psi), tc(psi)*ts(theta) + tc(theta)*ts(phi)*ts(psi)], dim=1),
+             torch.stack([tc(theta)*ts(psi) + tc(psi)*ts(phi)*ts(theta), tc(phi)*tc(psi), ts(psi)*ts(theta) - tc(psi)*tc(theta)*ts(phi)], dim=1),
+          torch.stack([-tc(phi)*ts(theta), ts(phi), tc(phi)*tc(theta)], dim=1)
+        ], dim=1)  # shape (batches, 3, 3)
+
+        return ret
+
 
     @staticmethod
     def integrateQ(quat: Tensor, omega: Tensor, time_step: float) -> Tensor:
