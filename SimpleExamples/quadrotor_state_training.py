@@ -77,10 +77,11 @@ def approximate_lqr(
     lower_limit = lower_limit.reshape(1, -1)
     upper_limit = upper_limit.reshape(1, -1)
     x = (torch.rand((100000, quadrotor_tracking_continous.nx), dtype=dtype, device=device) * range_limit) + lower_limit
-    V = torch.sum(x * (x @ S_torch), axis=1, keepdim=True)
+    # V = torch.sum(x * (x @ S_torch), axis=1, keepdim=True)
     x_bar = x - quadrotor_tracking_continous.x_equilibrium.reshape(1, -1)
+    batches = len(x_bar)
+    V = torch.einsum("bn,nm,bm->b", x_bar, S_torch, x_bar).reshape(batches, 1)
     u = quadrotor_tracking_continous.u_equilibrium.reshape(1, -1) + torch.einsum("mn,bn->bm", -K_torch, x_bar)
-    # u = x @ K_torch.T
 
     def approximate(system, system_input, target, lr, max_iter):
         optimizer = torch.optim.Adam(system.parameters(), lr=lr)
@@ -94,7 +95,7 @@ def approximate_lqr(
     print("Approximating the LQR controller")
     approximate(controller, x, u, 0.01, 500)
     print("Approximating the Lyapunov function from LQR")
-    approximate(lyapunov_nn, x, V, 0.01, 1000)
+    approximate(lyapunov_nn, x_bar, V, 0.5, 10000)
 
 
 def plot_V_heatmap(V, lower_limit, upper_limit, rho):

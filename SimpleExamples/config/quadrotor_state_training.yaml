@@ -17,16 +17,18 @@ pgd_verifier_steps: 300
 model:
   lyapunov:
     quadratic: True
-    hidden_widths: [32, 32, 32, 32, 32]
+    hidden_widths: [32, 32, 32]
   load_lyaloss: ${user.load_lyaloss}
   # load_lyaloss: /Users/mannanarshad/Documents/IL Space Society/ISS_Lyapunov_Stable_NN_Controllers/output/quadrotor_state_training/2025-02-17/19-27-20/lyaloss_0.1.pth
   kappa: 0.01
   V_decrease_within_roa: True
-  limit_scale: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+#  limit_scale: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  limit_scale: [1.0]
   V_psd_form: "L1"
-  rho_multiplier: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.5, 1.5, 1.5, 1.5]
+#  rho_multiplier: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.5, 1.5, 1.5, 1.5]
+  rho_multiplier: [1.5]
   # states are [pos_x, pos_y, pos_z, phi, theta, psi, vel_x, vel_y, vel_z, p, q, r]
-  limit: [5, 5, 5, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  limit: [10, 10, 10, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
   integration: "ExplicitEuler"
   dt: 0.05
 

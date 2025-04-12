@@ -225,7 +225,7 @@ class NeuralNetworkQuadraticLyapunov(nn.Module):
         if R is None:
             R = torch.rand((R_rows, self.x_dim)) - 0.5
 
-        self.register_parameter(name="R", param=torch.nn.Parameter(R))
+        self.register_parameter(name="R", param=torch.nn.Parameter(R))  # Ensures PSD output and is optimizable
 
     def forward(self, x):
         x0 = x - self.goal_state
@@ -238,7 +238,11 @@ class NeuralNetworkQuadraticLyapunov(nn.Module):
         Q = self.eps * torch.eye(self.x_dim, device=x.device) + (
             self.R.transpose(0, 1) @ self.R
         )
-        dVdx = 2 * x @ Q
+        # NOTE:
+        #   This was not in the original code, thus the derivative was calculated incorrectly before. However, since
+        #   the original paper always uses an equilbrium of 0, their results were still sound.
+        x0 = x - self.goal_state
+        dVdx = 2 * x0 @ Q
         return dVdx
 
     def diff(self, x, x_next, kappa, lyapunov_x):

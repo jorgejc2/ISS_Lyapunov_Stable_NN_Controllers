@@ -288,23 +288,23 @@ class CleanLossReturn:
         self.max_violation = max_violation
 
 
-def compute_clean_loss(
-    lyaloss, num_samples: int, limit: Tensor, clean_ratio: float
-) -> CleanLossReturn:
-    device = limit.device
-    x_dim = limit.numel()
-    clean_x = (
-        (
-            torch.rand((num_samples, x_dim), device=device)
-            - torch.full((x_dim,), 0.5, device=device)
-        )
-        * limit
-        * 2
-    )
-    sample_ret = compute_sample_loss(lyaloss, clean_x, clean_ratio)
-    return CleanLossReturn(
-        clean_x, sample_ret.loss, sample_ret.unsatisfied, sample_ret.max_violation
-    )
+# def compute_clean_loss(
+#     lyaloss, num_samples: int, limit: Tensor, clean_ratio: float
+# ) -> CleanLossReturn:
+#     device = limit.device
+#     x_dim = limit.numel()
+#     clean_x = (
+#         (
+#             torch.rand((num_samples, x_dim), device=device)
+#             - torch.full((x_dim,), 0.5, device=device)
+#         )
+#         * limit
+#         * 2
+#     )
+#     sample_ret = compute_sample_loss(lyaloss, clean_x, clean_ratio)
+#     return CleanLossReturn(
+#         clean_x, sample_ret.loss, sample_ret.unsatisfied, sample_ret.max_violation
+#     )
 
 
 class AdvLossReturn:
@@ -963,13 +963,14 @@ def train_lyapunov_with_buffer(
         # and update the adversarial dataset based on states that are indeed counter-examples
         # TODO(hongkai.dai): figure out a better way to get the clean_x. Should
         # I start from the adversarial states in the previous iteration?
+        limit_range = (upper_limit - lower_limit).reshape(1, -1)
         clean_x = (
             (
                 torch.rand((samples_per_iter, nx), device=device, dtype=dtype)
                 - torch.full((nx,), 0.5, device=device, dtype=dtype)
             )
-            * limit
-            * 2
+            * limit_range
+            + lower_limit.reshape(1, -1)
         )
         derivative_adv_x = pgd_attack(
             clean_x,

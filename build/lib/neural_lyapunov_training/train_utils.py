@@ -252,23 +252,23 @@ class CleanLossReturn:
         self.max_violation = max_violation
 
 
-def compute_clean_loss(
-    lyaloss, num_samples: int, limit: torch.Tensor, clean_ratio: float
-) -> CleanLossReturn:
-    device = limit.device
-    x_dim = limit.numel()
-    clean_x = (
-        (
-            torch.rand((num_samples, x_dim), device=device)
-            - torch.full((x_dim,), 0.5, device=device)
-        )
-        * limit
-        * 2
-    )
-    sample_ret = compute_sample_loss(lyaloss, clean_x, clean_ratio)
-    return CleanLossReturn(
-        clean_x, sample_ret.loss, sample_ret.unsatisfied, sample_ret.max_violation
-    )
+# def compute_clean_loss(
+#     lyaloss, num_samples: int, limit: torch.Tensor, clean_ratio: float
+# ) -> CleanLossReturn:
+#     device = limit.device
+#     x_dim = limit.numel()
+#     clean_x = (
+#         (
+#             torch.rand((num_samples, x_dim), device=device)
+#             - torch.full((x_dim,), 0.5, device=device)
+#         )
+#         * limit
+#         * 2
+#     )
+#     sample_ret = compute_sample_loss(lyaloss, clean_x, clean_ratio)
+#     return CleanLossReturn(
+#         clean_x, sample_ret.loss, sample_ret.unsatisfied, sample_ret.max_violation
+#     )
 
 
 class AdvLossReturn:
