@@ -89,6 +89,13 @@ class PositionalEncodingLayer(nn.Module):
 
         return output_dim
 
+class Cosine(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: Tensor)->Tensor:
+        return torch.cos(x)
+
 class SineLayer(nn.Module):
     """
     The SineLayer implementation given by the Siren paper.

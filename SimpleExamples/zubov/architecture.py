@@ -14,6 +14,7 @@ ACTIVATIONS = {
     "leaky_relu": nn.LeakyReLU,
     "sigmoid": nn.Sigmoid,
     "tanh": nn.Tanh,
+    "cos": Cosine,
     "gelu": nn.GELU,
     "selu": nn.SELU,
     "elu": nn.ELU,
@@ -64,12 +65,13 @@ class GeneralNeuralNetwork(nn.Module):
         for i in range(n_layers - 1):
             in_dim = input_dim if i == 0 else width
             layers.extend([
-                (f"Linear_{i}", nn.Linear(in_dim, width)),
-                (f"Activation_{i}", inter_act)
+                (f"Linear_{in_dim}_{width}_{i}", nn.Linear(in_dim, width)),
+                (f"Activation_{act}_{i}", inter_act)
             ])
         # append the last layer
         layers.extend([
-            (f"Linear_{i}", nn.Linear(width, output_dim)),
+            (f"Linear_{width}_{output_dim}_{i}", nn.Linear(width, output_dim)),
+            # (f"Activation_{final_act}_{i}", nn.Tanh())
         ])
         # final activation is not part of the model as it is allowed to be
         # swapped after training
@@ -80,7 +82,8 @@ class GeneralNeuralNetwork(nn.Module):
         self.output_dim = output_dim
 
     def forward(self, x: Tensor) -> Tensor:
-        return self._final_act(self.model(x))
+        return self.final_act(self.model(x))
+        # return self.model(x)
 
     def forward_with_coords(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -110,37 +113,35 @@ class ZubovNetwork(nn.Module):
 
     def __init__(self, dynamical_system, zubov_fn: GeneralNeuralNetwork, controller: Union[GeneralNeuralNetwork, Callable],
                  lb: Tensor, ub: Tensor, alpha: float, lrate: float, num_epochs: int, barrier_scale: float=2.,
-                 norm_threshold: float = 1e-6, integ_threshold: float = 50.,
                  max_steps:int=1e7, weight_decay:float=1e-5, clip_gradient_norm: Optional[float] = None,
                  c1: float = 5e1, c2: float = 3e1, c3: float = 1e1, c4: float = 1e1, c5: float = 1e1,
                  train_controller: bool = False, step_size: Optional[int] = None, gamma: Optional[float] = None,
                  final_lrate: Optional[float] = None, scheduler_type: str = 'none'):
         """
 
-        :param dynamical_system:
-        :param zubov_fn:
-        :param controller:
-        :param lb:                  lower limit of sampling region 𝒟
-        :param ub:                  upper limit of sampling region 𝒟
-        :param alpha:
-        :param lrate:               gradient descent learning rate
-        :param num_epochs:
-        :param barrier_scale:
-        :param norm_threshold:
-        :param integ_threshold:
-        :param max_steps:
-        :param weight_decay:        gradient descent weight decay
-        :param clip_gradient_norm:
-        :param c1:
-        :param c2:
-        :param c3:
-        :param c4:
-        :param c5:
-        :param train_controller:
-        :param step_size:
-        :param gamma:
-        :param final_lrate:
-        :param scheduler_type:
+        :param dynamical_system:    A function describing the discrete time dynamics of the system of interest.
+        :param zubov_fn:            A NN to learn the Zubov function, W(x).
+        :param controller:          A callable function (potentially a NN) to use as the controller of the system.
+        :param lb:                  Lower limit of the sampling region 𝒟.
+        :param ub:                  Upper limit of the sampling region 𝒟.
+        :param alpha:               Exponential decay rate.
+        :param lrate:               Gradient descent learning rate.
+        :param num_epochs:          The number of epochs the training will run. This does not need to be correct, only
+                                    used for the learning scheduler if a scheduler is used and requires it.
+        :param barrier_scale:       How much to scale the box for samples when sampling for the barrier loss function.
+        :param max_steps:           The maximum number of steps to simulate a trajectory for in the dynamical system.
+        :param weight_decay:        Gradient descent weight decay.
+        :param clip_gradient_norm:  If specified, the gradient norm of the gradient is clipped.
+        :param c1:                  Weighted parameters on the loss enforcing 0 condition.
+        :param c2:                  Weighted parameters on the loss enforcing W matches tanh(aV(x)).
+        :param c3:                  Weighted parameters on the loss enforcing gradient of W to be similar to gradient of V(x).
+        :param c4:                  Weighted parameters on the loss enforcing the barrier condition for expanding the Lyapunov function.
+        :param c5:                  Weighted parameters on the controller loss.
+        :param train_controller:    When True and the controller is a NN, the controller will be trained as well.
+        :param step_size:           Step size for the step learning rate scheduler.
+        :param gamma:               The exponential decay for the step learning rate scheduler.
+        :param final_lrate:         The final learning rate for the linear learning rate scheduler.
+        :param scheduler_type:      The type of scheduler to use, in types ['step', 'linear', 'None']
         """
         super().__init__()
 
@@ -149,23 +150,20 @@ class ZubovNetwork(nn.Module):
         self.dynamical_system = dynamical_system
         self.zubov_fn = zubov_fn
         self.controller = controller
+        # if specified and the controller is a NN, it will be trained
         self.train_controller = train_controller if isinstance(controller, nn.Module) else False
-        self.lb = lb
-        self.ub = ub
-        self.c1 = c1  # weight on loss enforcing 0 condition
-        self.c2 = c2  # weight on loss enforcing W matches tanh(aV(x))
-        self.c3 = c3  # weight on loss enforcing gradient of W to be similar to gradient of V(x)
-        self.c4 = c4  # weight on loss enforcing the barrier condition for expanding the Lyapunov function
-        self.c5 = c5  # weight on controller loss
+        self.lb, self.ub = lb, ub
+        self.c1, self.c2, self.c3, self.c4, self.c5 = c1, c2, c3, c4, c5
         self.barrier_scale = barrier_scale # how much to scale the box for samples when sampling for the barrier loss function
         self.alpha = alpha
-        self.norm_threshold = norm_threshold
-        self.integ_threshold = integ_threshold
         self.max_steps = int(max_steps)
+        self._use_barrier = True
         self.horizon = self.max_steps * self.dynamical_system.dt
         if self.train_controller:
+            # update parameters for the Zubov function and NN controller
             self.model_parameters = list(self.zubov_fn.parameters()) + list(self.controller.parameters())
         else:
+            # only update parameters for the Zubov function
             self.model_parameters = list(self.zubov_fn.parameters())
         self.optimizer = optim.Adam(self.model_parameters, lr=lrate, weight_decay=weight_decay)
         self.clip_gradient_norm = clip_gradient_norm
@@ -346,34 +344,42 @@ class ZubovNetwork(nn.Module):
                                     and estimate the remaining terms.
         :return:
         """
-        traj_norm = torch.linalg.vector_norm(traj, dim=2) * dt
+        traj_norm = torch.linalg.vector_norm(traj, dim=2)
+        traj_norm.sum(dim=1, keepdim=True) * dt
         if improved_data_loss:
-            traj_norm += torch.arctan(zubov_fn(traj[:, -1, :])) / alpha
-        lya_discrete = traj_norm.sum(dim=1, keepdim=True)
+            traj_norm += torch.arctanh(zubov_fn(traj[:, -1, :])) / alpha
+            # next_wx = zubov_fn(traj[:, -1, :])
+            # traj_norm += (1/(2*alpha))*torch.log((1 + next_wx)/(1 - next_wx))
 
-        return lya_discrete
+        return traj_norm
 
-    def step(self, x: Tensor, traj: Optional[Tensor] = None) -> Tuple[float, List[float]]:
+    def step(self, x: Tensor, traj: Optional[Tensor] = None) -> Tuple[float, float, float, float, float, float]:
         """
 
         :param x: (batch_size, input_dim)
-        :return:
+        :return total_loss:
+        :return loss_z:
+        :return loss_r:
+        :return loss_p:
+        :return loss_b:
+
         """
 
-        # equivalent to −∇ₓV(x)ᵀf(x); input is detached so that this norm operation is not in the computation graph
-        psi = lambda t : torch.linalg.vector_norm(t.detach(), dim=1, keepdim=True)
+        # equivalent to −∇ₓV(x)ᵀf(x)
+        psi = lambda t : torch.linalg.vector_norm(t, dim=1, keepdim=True)
 
-        # Get points on the border of the region of interest, ∂R₂ where R₂ = {αx : x ∈ R₁},
-        # R₁ ⊆ 𝒟, and 𝒟 is the region from which we are drawing samples.
-        x_b = ZubovNetwork.project_to_box_border(x, self.lb, self.ub, scale=self.barrier_scale, noise_var=0.2)
 
         with torch.no_grad():
+            # Get points on the border of the region of interest, ∂R₂ where R₂ = {αx : x ∈ R₁},
+            # R₁ ⊆ 𝒟, and 𝒟 is the region from which we are drawing samples.
+            # x_b = ZubovNetwork.project_to_box_border(x, self.lb, self.ub, scale=self.barrier_scale, noise_var=0.2)
+            x_b = ZubovNetwork.project_to_box_border(x, self.lb, self.ub, scale=self.barrier_scale, noise_var=0.)
             # in case dynamical system is described as another NN, we do not want to update its parameter
             if traj is None:
                 traj = self.dynamical_system.forward_trajectory(x, self.controller, self.max_steps)  # return the trajectory
             fx = traj[:, 0, :]  # get the next state
             lya_max = ZubovNetwork.maximal_lyapunov_fn(self.alpha, self.zubov_fn, traj, self.dynamical_system.dt,
-                                                       improved_data_loss=False)
+                                                       improved_data_loss=True)
             psi_output = psi(x)
 
         yhat, coords = self.zubov_fn.forward_with_coords(x)  # zubov output
@@ -383,35 +389,42 @@ class ZubovNetwork(nn.Module):
 
         # Loss Z ensures that at the equilibrium, the output of W(x) is 0.
         loss_z = self.zubov_fn.forward(torch.zeros((1, self.dynamical_system.nx)).to(x))
-        loss_z = self.c1 * (loss_z**2).mean()
+        # loss_z = self.c1 * (loss_z**2).mean()
+        loss_z = self.c1 * loss_z**2
 
         # Loss R ensures that W(x) = tanh(a*V(x)) where V(x) in this implementation is
         # an approximation of the defined Maximal Lyapunov function
         loss_r = yhat - torch.tanh(self.alpha * lya_max)
-        loss_r = self.c2 * (loss_r**2).mean()
+        # loss_r = self.c2 * (loss_r**2).mean()
+        loss_r = self.c2 * loss_r**2
 
         # Loss P is the derivative condition: ∂ₓW(x)ᵀf(x) = a(1−W(x))(1+W(x))Φ(x)
         # where Φ(x) := ‖x‖
         loss_p1 = torch.einsum('bi,bi->b', grad_output, fx).unsqueeze(1)
         loss_p2 = self.alpha * (1 - yhat) * (1 + yhat) * psi_output
         loss_p = loss_p1 + loss_p2
-        loss_p = self.c3 * (loss_p**2).mean()
+        # loss_p = self.c3 * (loss_p**2).mean()
+        loss_p = self.c3 * loss_p**2
 
         ## BARRIER LOSS ##
-        loss_b = self.c4 * (self.zubov_fn.forward(x_b) - 1)
-        loss_b = loss_b.abs().mean()
+        if self._use_barrier:
+            loss_b = self.zubov_fn.forward(x_b) - 1
+            # loss_b = loss_b.abs().mean()
+            loss_b = self.c4 * loss_b.abs()
+        else:
+            loss_b = 0.
 
         ## CONTROLLER LOSS ##
         if self.train_controller:
             grad_output /= torch.linalg.vector_norm(grad_output, dim=1, keepdim=True)
             loss_c = torch.einsum('bi,bi->b', grad_output.detach(), fx).unsqueeze(1)
-            loss_c = self.c5 * loss_c.mean()
+            loss_c = self.c5 * loss_c**2
         else:
             loss_c = 0.
 
         ## FINAL LOSS ##
         # add up the total loss
-        total_loss = loss_z + loss_r + loss_p + loss_b + loss_c
+        total_loss = (loss_z + loss_r + loss_p + loss_b + loss_c).mean()
 
         # zero the gradients
         self.optimizer.zero_grad()
@@ -445,6 +458,14 @@ class ZubovNetwork(nn.Module):
             last_lr = self.lrate
 
         return last_lr, None
+
+    @property
+    def use_barrier(self)->bool:
+        return self._use_barrier
+
+    @use_barrier.setter
+    def use_barrier(self, use_barrier: bool):
+        self._use_barrier = use_barrier
 
 # class ZubovNetworkWithSiren(nn.Module):
 #     def __init__(self, dynamical_system, lambda_b: float, lb: Tensor, ub: Tensor, alpha: float,

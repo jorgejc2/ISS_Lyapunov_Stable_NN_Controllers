@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 from torch import Tensor
 from typing import Union, Tuple, Optional, Callable
 import numpy as np
@@ -8,19 +9,29 @@ from math import ceil
 
 to_numpy = lambda x : x.detach().cpu().numpy()
 
-def get_dataset(advance_trajectories: bool, **args) -> Union['SampleDataset', 'SampleDatasetAdvancedTrajectories']:
+def get_dataset(advance_trajectories: bool, batch_size: int, **args
+                ) -> Tuple[Union['SampleDataset', 'SampleDatasetAdvancedTrajectories'], DataLoader]:
+    """
 
+    :param advance_trajectories:
+    :param args:
+    :return:
+    """
     if advance_trajectories:
-        return SampleDatasetAdvancedTrajectories(**args)
+        dataset = SampleDatasetAdvancedTrajectories(**args)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     else:
-        return SampleDataset(**args)
+        dataset = SampleDataset(batch_size=batch_size, **args)
+        dataloader = DataLoader(dataset, batch_size=1, shuffle=True, drop_last=True)
+
+    return dataset, dataloader
 
 class SampleDataset(Dataset):
     """
     This dataset generates a random set of samples of the fly. This class does not support generating
     trajectories in advance. This class should be used if the controller is being trained as well.
     """
-    def __init__(self, n_samples: int, batch_size: int, lb: Tensor, ub: Tensor, verbose:bool=True):
+    def __init__(self, n_samples: int, batch_size: int, lb: Tensor, ub: Tensor, verbose:bool=False):
         super().__init__()
         self.n_samples = n_samples
         self.batch_size = batch_size
@@ -38,7 +49,9 @@ class SampleDataset(Dataset):
         return self.n_samples // self.batch_size
 
     def __getitem__(self, idx: int):
-        return self.randomize_samples(self.batch_size), None
+        return {
+            "batch_x": self.randomize_samples(self.batch_size),
+        }
 
     def reset_samples(self):
         pass
@@ -54,7 +67,7 @@ class SampleDatasetAdvancedTrajectories(Dataset):
     trained, then this dataset will negatively affect the training procedure.
     """
     def __init__(self, dynamical_system, controller_fn: Callable, max_steps: int, n_samples: int, lb: Tensor, ub: Tensor,
-                 gpu_frac: float = 0.8, device=torch.device('cpu'), verbose:bool=True):
+                 gpu_frac: float = 0.8, device=torch.device('cpu'), verbose:bool=False):
         """
 
         :param dynamical_system:
@@ -85,9 +98,6 @@ class SampleDatasetAdvancedTrajectories(Dataset):
         self.traj_batches = ceil(self.traj_memory_bytes / self.total_available_bytes)
         self.traj_step_size = self.n_samples // self.traj_batches
 
-        # initialize the dataset
-        self.reset_samples()
-
         if verbose:
             print(f"n_samples = {n_samples}")
             print(f"lb shape = {self.lb.shape}, ub shape = {self.ub.shape}")
@@ -100,12 +110,17 @@ class SampleDatasetAdvancedTrajectories(Dataset):
             print(f"traj_batches = {self.traj_batches}")
             print(f"traj_step_size = {self.traj_step_size}")
 
+        # initialize the dataset
+        self.reset_samples()
 
     def __len__(self) -> int:
         return self.n_samples
 
     def __getitem__(self, idx: int):
-        return self._samples[idx], self._trajectories[idx]
+        return {
+            "batch_x": self._samples[idx],
+            "batch_traj": self._trajectories[idx]
+        }
 
     def get_trajectories(self, samples: Tensor):
         """
