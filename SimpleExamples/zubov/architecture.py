@@ -4,8 +4,9 @@ import torch.nn.functional as F
 from functools import partial
 from torch import Tensor, optim
 from collections import OrderedDict
-from typing import Tuple, Union, Optional, Dict, List, Callable
+from typing import *
 from SimpleExamples.zubov.neural_building_blocks import *
+from SimpleExamples.zubov.utils import *
 
 to_numpy = lambda x : x.detach().cpu().numpy() if isinstance(x, Tensor) else x
 
@@ -28,28 +29,14 @@ def get_activation(name: str):
     except KeyError:
         raise ValueError(f"Unknown activation: {name}")
 
-### Custom LR Schedulers
-def linear_decay(epoch, initial_lr, final_lr, total_epochs, last_decay):
-    """
-
-    :param epoch:
-    :param initial_lr:
-    :param final_lr:
-    :param total_epochs:
-    :param last_decay:
-    :return:
-    """
-    # FIXME: Currently hard-coded to a tailored configuration that shows stable convergence. The parameters should
-    # be modified instead of hard-coded.
-    if epoch < 25:
-        total_epochs = 25
-        return 1 - epoch / total_epochs * (1 - final_lr / initial_lr)
-    else:
-        return last_decay
-
 class GeneralNeuralNetwork(nn.Module):
-    def __init__(self, width: int, n_layers: int, input_dim: int, output_dim: int,
-                 act: str = 'relu', final_act: str = 'tanh',):
+    def __init__(self, width: int, n_layers: int, input_dim: int, output_dim: int, optimizer: Callable,
+                 optimizer_params: Dict[str, Any],
+                 act: str = 'relu', final_act: str = 'tanh', output_scalar: float = 1.,
+                 learning_rate_scheduler: str = "none",
+                 learning_rate_parameters: Dict[str, Any] = None,
+                 clip_grad: bool = False, clip_gradients_parameters: Optional[Dict[str, Any]] = None,
+        ):
         """
         :param width:           width of each layer
         :param n_layers:        number of NN layers
@@ -73,17 +60,27 @@ class GeneralNeuralNetwork(nn.Module):
             (f"Linear_{width}_{output_dim}_{i}", nn.Linear(width, output_dim)),
             # (f"Activation_{final_act}_{i}", nn.Tanh())
         ])
-        # final activation is not part of the model as it is allowed to be
-        # swapped after training
+        # Final activation is not part of the model as it is allowed to be
+        # swapped after training.
         self.final_act = final_act
 
         self.model = nn.Sequential(OrderedDict(layers))
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.output_scalar = output_scalar
+        self.lr = self.optimizer_params.get('lr')
+        self.clip_grad = clip_grad
+        self.clip_gradients_parameters = clip_gradients_parameters or {}
+
+        # initialize the optimizer
+        self.optimizer = optimizer(self.model.parameters(), **optimizer_params)
+
+        # initialize the learning rate scheduler
+        learning_rate_parameters = learning_rate_parameters or {}
+        self.scheduler = get_lr_scheduler(learning_rate_scheduler, **learning_rate_parameters)
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.final_act(self.model(x))
-        # return self.model(x)
+        return self.final_act(self.model(x)) * self.output_scalar
 
     def forward_with_coords(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -100,6 +97,34 @@ class GeneralNeuralNetwork(nn.Module):
 
         return output, x
 
+    def clip_gradients(self):
+        """
+        If desired, will clip the parameter's gradients.
+        """
+        if self.clip_grad:
+            nn.utils.clip_grad_norm_(self.model.parameters(), **self.clip_gradients_parameters)
+
+    def step(self):
+        """
+        Steps the optimizer.
+        """
+        self.optimizer.step()
+
+    def scheduler_step(self) -> float:
+        """
+        Steps the scheduler if it is being used.
+        :return: The most recent learning rate used.
+        """
+
+        # step scheduler
+        if self.scheduler is not None:
+            self.scheduler.step()
+            last_lr = self.scheduler.get_last_lr()[0]
+        else:
+            last_lr = self.lr
+
+        return last_lr
+
     @property
     def final_act(self):
         return self._final_act
@@ -112,11 +137,9 @@ class GeneralNeuralNetwork(nn.Module):
 class ZubovNetwork(nn.Module):
 
     def __init__(self, dynamical_system, zubov_fn: GeneralNeuralNetwork, controller: Union[GeneralNeuralNetwork, Callable],
-                 lb: Tensor, ub: Tensor, alpha: float, lrate: float, num_epochs: int, barrier_scale: float=2.,
-                 max_steps:int=1e7, weight_decay:float=1e-5, clip_gradient_norm: Optional[float] = None,
+                 lb: Tensor, ub: Tensor, alpha: float, barrier_scale: float=2., max_steps:int=1e7,
                  c1: float = 5e1, c2: float = 3e1, c3: float = 1e1, c4: float = 1e1, c5: float = 1e1,
-                 train_controller: bool = False, step_size: Optional[int] = None, gamma: Optional[float] = None,
-                 final_lrate: Optional[float] = None, scheduler_type: str = 'none'):
+                 train_controller: bool = False):
         """
 
         :param dynamical_system:    A function describing the discrete time dynamics of the system of interest.
@@ -125,28 +148,18 @@ class ZubovNetwork(nn.Module):
         :param lb:                  Lower limit of the sampling region 𝒟.
         :param ub:                  Upper limit of the sampling region 𝒟.
         :param alpha:               Exponential decay rate.
-        :param lrate:               Gradient descent learning rate.
-        :param num_epochs:          The number of epochs the training will run. This does not need to be correct, only
                                     used for the learning scheduler if a scheduler is used and requires it.
         :param barrier_scale:       How much to scale the box for samples when sampling for the barrier loss function.
         :param max_steps:           The maximum number of steps to simulate a trajectory for in the dynamical system.
-        :param weight_decay:        Gradient descent weight decay.
-        :param clip_gradient_norm:  If specified, the gradient norm of the gradient is clipped.
         :param c1:                  Weighted parameters on the loss enforcing 0 condition.
         :param c2:                  Weighted parameters on the loss enforcing W matches tanh(aV(x)).
         :param c3:                  Weighted parameters on the loss enforcing gradient of W to be similar to gradient of V(x).
         :param c4:                  Weighted parameters on the loss enforcing the barrier condition for expanding the Lyapunov function.
         :param c5:                  Weighted parameters on the controller loss.
         :param train_controller:    When True and the controller is a NN, the controller will be trained as well.
-        :param step_size:           Step size for the step learning rate scheduler.
-        :param gamma:               The exponential decay for the step learning rate scheduler.
-        :param final_lrate:         The final learning rate for the linear learning rate scheduler.
-        :param scheduler_type:      The type of scheduler to use, in types ['step', 'linear', 'None']
         """
         super().__init__()
 
-        self.lrate = lrate
-        self.weight_decay = weight_decay
         self.dynamical_system = dynamical_system
         self.zubov_fn = zubov_fn
         self.controller = controller
@@ -159,29 +172,6 @@ class ZubovNetwork(nn.Module):
         self.max_steps = int(max_steps)
         self._use_barrier = True
         self.horizon = self.max_steps * self.dynamical_system.dt
-        if self.train_controller:
-            # update parameters for the Zubov function and NN controller
-            self.model_parameters = list(self.zubov_fn.parameters()) + list(self.controller.parameters())
-        else:
-            # only update parameters for the Zubov function
-            self.model_parameters = list(self.zubov_fn.parameters())
-        self.optimizer = optim.Adam(self.model_parameters, lr=lrate, weight_decay=weight_decay)
-        self.clip_gradient_norm = clip_gradient_norm
-
-        # set linear LR scheduler
-        self.scheduler = None
-        if scheduler_type == 'step':
-            assert step_size is not None and gamma is not None, "Must specify step size and gamma to use Step LR"
-            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size,
-                                                             gamma=gamma)
-        elif scheduler_type == 'linear':
-            decay_func_siren = partial(linear_decay, initial_lr=lrate, final_lr=final_lrate,
-                                       total_epochs=num_epochs, last_decay=1e-3)
-            self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=decay_func_siren)
-        elif scheduler_type == 'none':
-            pass
-        else:
-            raise ValueError(f"Scheduler type of {scheduler_type} is not recognized")
 
     @staticmethod
     def project_to_uniform_box_border(n: int, x_U: Tensor, scale=1., noise_var: float = 0.) -> Tensor:
@@ -208,11 +198,12 @@ class ZubovNetwork(nn.Module):
     def project_to_box_border(x: Tensor, x_L: Tensor, x_U: Tensor, scale=1., noise_var: float = 0.) -> Tensor:
         """
         Projects a batch of samples to the border of a (potentially nonuniform) box that may be scaled.
-        :param x:       box samples (assumed to already be in the range [x_L, x_U])
-        :param x_L:     lower limit box to project onto
-        :param x_U:     upper limit box to project onto
-        :param scale:       Scale of the box
-        :param noise_var:   The Gaussian variance of the noise to be added to the samples (by default, no noise is added)
+        :param x:           Box samples (assumed to already be in the range [x_L, x_U]).
+        :param x_L:         Lower limit box to project onto.
+        :param x_U:         Upper limit box to project onto.
+        :param scale:       Scale of the box.
+        :param noise_var:   The Gaussian variance of the noise to be added to the samples (by default, no noise is
+                            added).
         :return:
         """
 
@@ -327,7 +318,7 @@ class ZubovNetwork(nn.Module):
         * ∫₀ᴴ ‖x(t;x₀)‖ dt where H = ∞ if the initial state x₀ is stabilizable
         * ∞ if the initial state x₀ is not stabilizable
 
-        Since it is difficult to calculate this integral, we instead perform a discrete calculation
+        Since it is challenging to calculate this integral, we instead perform a discrete calculation
         that serves as an estimate of the true maximal Lyapunov function definition.
         This function returns the value:
 
@@ -336,9 +327,9 @@ class ZubovNetwork(nn.Module):
         where Δt is the discrete time step of our system, and H = Δt⋅N where 1 < N < ∞ or the
         number of discrete time steps to run the trajectory for.
 
-        :param zubov_fn:            The Zubov function, W(x)
-        :param traj:                A batch of trajectories
-        :param dt:                  Discrete time step
+        :param zubov_fn:            The Zubov function, W(x).
+        :param traj:                A batch of trajectories.
+        :param dt:                  Discrete time step.
         :param improved_data_loss:  Notice that the maximal Lyapunov function looks like a Value function in RL,
                                     therefore, we can separate out the Lyapunov function from time step 0 to T,
                                     and estimate the remaining terms.
@@ -427,37 +418,62 @@ class ZubovNetwork(nn.Module):
         total_loss = (loss_z + loss_r + loss_p + loss_b + loss_c).mean()
 
         # zero the gradients
-        self.optimizer.zero_grad()
+        self.zero_grad()
 
         # perform backward gradient calculations
         total_loss.backward()
 
         # perform gradient clipping
         # typically recommended for stable training
-        if self.clip_gradient_norm is not None:
-            nn.utils.clip_grad_norm_(self.model_parameters, max_norm=self.clip_gradient_norm)
+        self.clip_gradients()
 
         # update the model parameters
-        self.optimizer.step()
+        self.step_networks()
 
         rest_losses = [t.mean().item() if isinstance(t, Tensor) else t for t in [loss_z, loss_r, loss_p, loss_b, loss_c]]
         return total_loss.item(), *rest_losses
 
-    def scheduler_step(self) -> Tuple[float, None]:
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        self.zubov_fn.zero_grad(set_to_none=set_to_none)
+        if self.train_controller:
+            self.controller.zero_grad(set_to_none=set_to_none)
+
+    def clip_gradients(self):
+        self.zubov_fn.clip_gradients()
+        if self.train_controller:
+            self.controller.clip_gradients()
+
+    def step_networks(self):
         """
-        Steps the scheduler if it is being used.
-        In addition, returns the siren learning rate before the scheduling step.
+        Runs the parameter step on each network that is being trained.
         :return:
         """
+        self.zubov_fn.step()
+        if self.train_controller:
+            self.controller.step()
 
-        # step scheduler
-        if self.scheduler is not None:
-            self.scheduler.step()
-            last_lr = self.scheduler.get_last_lr()[0]
-        else:
-            last_lr = self.lrate
+    def scheduler_step(self) -> Tuple[float, Optional[float]]:
+        """
+        Steps the scheduler of the Zubov function and the controller (if being trained).
+        :return:    Tuple of last learning rates that were used for each network.
+        """
+        def _step_scheduler(net: nn.Module):
+            """
+            Steps the scheduler if it is being used.
+            In addition, returns the siren learning rate before the scheduling step.
+            :param net: Network object.
+            """
+            if net.scheduler is not None:
+                net.step()
+                last_lr = net.scheduler.get_last_lr()[0]
+            else:
+                last_lr = net.lrate
+            return last_lr
 
-        return last_lr, None
+        zubov_last_lr = _step_scheduler(self.zubov_fn)
+        controller_last_lr = _step_scheduler(self.controller) if self.train_controller else None
+
+        return zubov_last_lr, controller_last_lr
 
     @property
     def use_barrier(self)->bool:
